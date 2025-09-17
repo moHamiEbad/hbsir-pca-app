@@ -1,0 +1,15 @@
+# Core
+numpy>=1.26
+pandas>=2.2
+scipy>=1.11
+
+# App
+streamlit>=1.33
+plotly>=5.22
+
+# Excel IO
+openpyxl>=3.1
+XlsxWriter>=3.2
+
+# Data library (pin to your known-good version if needed)
+hbsir

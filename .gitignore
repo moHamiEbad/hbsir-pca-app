@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+
+# Envs
+.venv/
+venv/
+env/
+
+# Streamlit
+.streamlit/
+
+# Output
+pca_output/
+*.xlsx
+*.csv
+
+# OS
+.DS_Store
+Thumbs.db
