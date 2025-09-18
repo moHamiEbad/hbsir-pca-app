@@ -369,6 +369,15 @@ if plot_kind in ("Scores", "Biplot"):
             filter_counties = st.multiselect("Counties (optional)", cnts, default=cnts)
         color_by = st.selectbox("Color households by", ["None","Settlement","Province","County"], index=1)
         if color_by == "None": color_by = None
+
+        # Transparency helps reveal density & colors underneath
+        point_opacity = st.slider("Point opacity", 0.05, 1.0, 0.30, 0.05,
+                                help="Lower = more transparent; overlapping points look darker.")
+        randomize_order = False
+        if point_level == "Household" and color_by is not None:
+            randomize_order = st.checkbox("Randomize category draw order", value=True,
+                                        help="Prevents a single color from always drawing on top.")
+
     else:
         # Province/County level
         meta_any = next(iter(st.session_state.pca_results.values()))["scores_with_meta"]
@@ -461,73 +470,87 @@ load_df_plot = res["load_df_all"].copy()
 if plot_kind in ("Loadings","Biplot") and loading_filter:
     load_df_plot = load_df_plot[load_df_plot["feature"].astype(str).isin(loading_filter)].copy()
 if plot_kind == "Biplot" and loading_scale != 1.0:
-    # rescale selected PCs
+    # rescale selected PCs' loadings
     for c in load_df_plot.columns:
         if c.startswith("PC"):
             load_df_plot[c] = load_df_plot[c] * loading_scale
 
 # Finally draw the selected plot
 if plot_kind == "Scores":
-    # 2D: keep your helper; 3D: native Scatter3d
     if plot_dim == "2D":
-        fig = make_scores_scatter(scores_plot, pcs=(pcs[0], pcs[1]),
-                                  color_by=color_by,
-                                  title=f"Scores — Year {cur_year} ({point_level})")
+        fig = make_scores_scatter(
+            scores_plot, pcs=(pcs[0], pcs[1]),
+            color_by=color_by,
+            title=f"Scores — Year {cur_year} ({point_level})",
+            opacity=point_opacity,
+            randomize_trace_order=randomize_order,
+        )
         st.plotly_chart(fig, use_container_width=True)
     else:
         # 3D scores
         xlab, ylab, zlab = f"PC{pcs[0]}", f"PC{pcs[1]}", f"PC{pcs[2]}"
-        # Ensure columns exist for this year
         missing = [c for c in (xlab, ylab, zlab) if c not in scores_plot.columns]
         if missing:
             st.warning(f"Selected PCs not available for {cur_year}: {missing}")
         else:
             fig = go.Figure()
-            if color_by and color_by in scores_plot.columns:
-                for key, grp in scores_plot.groupby(color_by):
+            df3 = scores_plot.copy()
+            if color_by and color_by in df3.columns:
+                col = color_by
+                # keep a visible '(missing)' bucket and don't drop NaNs
+                df3[col] = df3[col].where(df3[col].notna(), "(missing)")
+                groups = list(df3.groupby(col, dropna=False))
+                if randomize_order and len(groups) > 1:
+                    idx = np.random.permutation(len(groups))
+                    groups = [groups[i] for i in idx]
+                for key, grp in groups:
                     fig.add_trace(go.Scatter3d(
                         x=grp[xlab], y=grp[ylab], z=grp[zlab],
                         mode="markers",
                         name=str(key),
-                        marker=dict(size=3, opacity=0.8),
+                        marker=dict(size=3, opacity=point_opacity),
                         text=grp.get("point_name"),
-                        hovertemplate="<b>%{text}</b><br>" +
-                                      f"{xlab}=%{{x:.3f}}<br>{ylab}=%{{y:.3f}}<br>{zlab}=%{{z:.3f}}<extra></extra>"
+                        hovertemplate="<b>%{text}</b><br>"
+                                      f"{xlab}=%{{x:.3f}}<br>"
+                                      f"{ylab}=%{{y:.3f}}<br>"
+                                      f"{zlab}=%{{z:.3f}}"
+                                      "<extra>%{fullData.name}</extra>"
                     ))
             else:
                 fig.add_trace(go.Scatter3d(
-                    x=scores_plot[xlab], y=scores_plot[ylab], z=scores_plot[zlab],
+                    x=df3[xlab], y=df3[ylab], z=df3[zlab],
                     mode="markers",
-                    marker=dict(size=3, opacity=0.8),
-                    text=scores_plot.get("point_name"),
-                    hovertemplate="<b>%{text}</b><br>" +
-                                  f"{xlab}=%{{x:.3f}}<br>{ylab}=%{{y:.3f}}<br>{zlab}=%{{z:.3f}}<extra></extra>"
+                    marker=dict(size=3, opacity=point_opacity),
+                    text=df3.get("point_name"),
+                    hovertemplate="<b>%{text}</b><br>"
+                                  f"{xlab}=%{{x:.3f}}<br>"
+                                  f"{ylab}=%{{y:.3f}}<br>"
+                                  f"{zlab}=%{{z:.3f}}"
+                                  "<extra></extra>"
                 ))
             fig.update_layout(
                 title=f"Scores — Year {cur_year} ({point_level})",
-                scene=dict(
-                    xaxis_title=xlab,
-                    yaxis_title=ylab,
-                    zaxis_title=zlab
-                ),
+                scene=dict(xaxis_title=xlab, yaxis_title=ylab, zaxis_title=zlab),
                 template="plotly_white",
                 height=700
             )
             st.plotly_chart(fig, use_container_width=True)
 
 elif plot_kind == "Loadings":
-    # Keep table view; you could add a 3D loadings-only plot similarly if you want
     st.dataframe(load_df_plot)
 
 else:  # Biplot
     if plot_dim == "2D":
-        # keep your 2D helper
         plot_df = scores_plot.rename(columns={f"PC{pcs[0]}": f"PC{pcs[0]}", f"PC{pcs[1]}": f"PC{pcs[1]}"})
-        fig = make_biplot(plot_df, load_df_plot, pcs=(pcs[0], pcs[1]),
-                          title=f"Biplot — Year {cur_year} ({point_level})")
+        fig = make_biplot(
+            plot_df, load_df_plot, pcs=(pcs[0], pcs[1]),
+            title=f"Biplot — Year {cur_year} ({point_level})",
+            opacity=point_opacity,
+            randomize_trace_order=randomize_order,
+        )
         st.plotly_chart(fig, use_container_width=True)
     else:
-        # 3D biplot (scores + loadings arrows in 3D)
+        # 3D biplot (scores + loadings arrows)
         xlab, ylab, zlab = f"PC{pcs[0]}", f"PC{pcs[1]}", f"PC{pcs[2]}"
         missing_s = [c for c in (xlab, ylab, zlab) if c not in scores_plot.columns]
         missing_l = [c for c in (xlab, ylab, zlab) if c not in load_df_plot.columns]
@@ -537,27 +560,40 @@ else:  # Biplot
         else:
             fig = go.Figure()
 
-            # scores (no grouping color here; keep consistent with 2D helper behavior)
-            if color_by and color_by in scores_plot.columns:
-                for key, grp in scores_plot.groupby(color_by):
+            # scores (NaN-safe grouping + transparency)
+            df3 = scores_plot.copy()
+            if color_by and color_by in df3.columns:
+                col = color_by
+                df3[col] = df3[col].where(df3[col].notna(), "(missing)")
+                groups = list(df3.groupby(col, dropna=False))
+                if randomize_order and len(groups) > 1:
+                    idx = np.random.permutation(len(groups))
+                    groups = [groups[i] for i in idx]
+                for key, grp in groups:
                     fig.add_trace(go.Scatter3d(
                         x=grp[xlab], y=grp[ylab], z=grp[zlab],
                         mode="markers",
                         name=str(key),
-                        marker=dict(size=3, opacity=0.8),
+                        marker=dict(size=3, opacity=point_opacity),
                         text=grp.get("point_name"),
-                        hovertemplate="<b>%{text}</b><br>" +
-                                      f"{xlab}=%{{x:.3f}}<br>{ylab}=%{{y:.3f}}<br>{zlab}=%{{z:.3f}}<extra></extra>"
+                        hovertemplate="<b>%{text}</b><br>"
+                                      f"{xlab}=%{{x:.3f}}<br>"
+                                      f"{ylab}=%{{y:.3f}}<br>"
+                                      f"{zlab}=%{{z:.3f}}"
+                                      "<extra>%{fullData.name}</extra>"
                     ))
             else:
                 fig.add_trace(go.Scatter3d(
-                    x=scores_plot[xlab], y=scores_plot[ylab], z=scores_plot[zlab],
+                    x=df3[xlab], y=df3[ylab], z=df3[zlab],
                     mode="markers",
                     name="Scores",
-                    marker=dict(size=3, opacity=0.8),
-                    text=scores_plot.get("point_name"),
-                    hovertemplate="<b>%{text}</b><br>" +
-                                  f"{xlab}=%{{x:.3f}}<br>{ylab}=%{{y:.3f}}<br>{zlab}=%{{z:.3f}}<extra></extra>"
+                    marker=dict(size=3, opacity=point_opacity),
+                    text=df3.get("point_name"),
+                    hovertemplate="<b>%{text}</b><br>"
+                                  f"{xlab}=%{{x:.3f}}<br>"
+                                  f"{ylab}=%{{y:.3f}}<br>"
+                                  f"{zlab}=%{{z:.3f}}"
+                                  "<extra></extra>"
                 ))
 
             # loadings arrows
@@ -577,11 +613,7 @@ else:  # Biplot
 
             fig.update_layout(
                 title=f"Biplot — Year {cur_year} ({point_level})",
-                scene=dict(
-                    xaxis_title=xlab,
-                    yaxis_title=ylab,
-                    zaxis_title=zlab
-                ),
+                scene=dict(xaxis_title=xlab, yaxis_title=ylab, zaxis_title=zlab),
                 template="plotly_white",
                 height=750
             )

@@ -231,47 +231,90 @@ def _customdata_and_template(df: pd.DataFrame, p1: int, p2: int):
     return customdata, hovertemplate
 
 
+
 def make_scores_scatter(
     scores_df: pd.DataFrame,
     pcs: Tuple[int, int],
     color_by: Optional[str] = None,
-    title: str = ""
+    title: str = "",
+    opacity: float = 0.3,
+    randomize_trace_order: bool = False,
+    use_gl: bool = True,
 ) -> go.Figure:
     p1, p2 = pcs
     xlab, ylab = f"PC{p1}", f"PC{p2}"
+    Trace = go.Scattergl if use_gl else go.Scatter
+
+    # Safety: if empty after filters, just return blank axes
+    if scores_df.empty or xlab not in scores_df.columns or ylab not in scores_df.columns:
+        fig = go.Figure()
+        fig.update_layout(title=title, xaxis_title=xlab, yaxis_title=ylab,
+                          template="plotly_white", height=600)
+        return fig
+
+    df = scores_df.copy()
+
+    # Always have something to show in hover
+    if "point_name" not in df.columns:
+        # Best-effort: Household -> ID, else Province/County, else row index
+        if "ID" in df.columns:
+            df["point_name"] = df["ID"].astype(str)
+        elif "Province" in df.columns:
+            df["point_name"] = df["Province"].astype(str)
+        elif "County" in df.columns:
+            df["point_name"] = df["County"].astype(str)
+        else:
+            df["point_name"] = df.index.astype(str)
 
     fig = go.Figure()
 
-    if color_by and color_by in scores_df.columns:
-        for key, grp in scores_df.groupby(color_by, sort=False):
-            customdata, hovertemplate = _customdata_and_template(grp, p1, p2)
-            fig.add_trace(go.Scatter(
-                x=grp[xlab],
-                y=grp[ylab],
-                mode="markers",
-                name=str(key),
-                marker=dict(size=5, opacity=0.75),
-                customdata=customdata,
-                hovertemplate=hovertemplate,
+    if color_by and color_by in df.columns:
+        # Keep NaN group visible & label it consistently
+        col = color_by
+        df[col] = df[col].astype(object)
+        df[col] = df[col].where(df[col].notna(), "(missing)")
+
+        groups = list(df.groupby(col, dropna=False))
+        if randomize_trace_order and len(groups) > 1:
+            # deterministic shuffle per render: sort by key hash
+            groups = sorted(groups, key=lambda kv: hash(str(kv[0])) % 997)
+
+        # If somehow still no groups, fall back to single trace
+        if not groups:
+            fig.add_trace(Trace(
+                x=df[xlab], y=df[ylab], mode="markers", name="points",
+                marker=dict(size=5, opacity=opacity),
+                text=df["point_name"],
+                hovertemplate="<b>%{text}</b><br>"
+                              f"{xlab}=%{{x:.3f}}<br>{ylab}=%{{y:.3f}}"
+                              "<extra></extra>"
             ))
+        else:
+            for key, grp in groups:
+                fig.add_trace(Trace(
+                    x=grp[xlab], y=grp[ylab], mode="markers", name=str(key),
+                    marker=dict(size=5, opacity=opacity),
+                    text=grp["point_name"],
+                    hovertemplate="<b>%{text}</b><br>"
+                                  f"{xlab}=%{{x:.3f}}<br>{ylab}=%{{y:.3f}}"
+                                  "<extra>%{fullData.name}</extra>"
+                ))
     else:
-        customdata, hovertemplate = _customdata_and_template(scores_df, p1, p2)
-        fig.add_trace(go.Scatter(
-            x=scores_df[xlab],
-            y=scores_df[ylab],
-            mode="markers",
-            marker=dict(size=5, opacity=0.75),
-            customdata=customdata,
-            hovertemplate=hovertemplate,
-            name="Scores",
+        fig.add_trace(Trace(
+            x=df[xlab], y=df[ylab], mode="markers", name="points",
+            marker=dict(size=5, opacity=opacity),
+            text=df["point_name"],
+            hovertemplate="<b>%{text}</b><br>"
+                          f"{xlab}=%{{x:.3f}}<br>{ylab}=%{{y:.3f}}"
+                          "<extra></extra>"
         ))
 
     fig.update_layout(
         title=title,
-        xaxis_title=xlab,
-        yaxis_title=ylab,
+        xaxis_title=xlab, yaxis_title=ylab,
         template="plotly_white",
         height=600,
+        legend=dict(itemsizing="trace", traceorder="normal")
     )
     return fig
 
@@ -280,26 +323,28 @@ def make_biplot(
     scores_df: pd.DataFrame,
     load_df: pd.DataFrame,
     pcs: Tuple[int, int],
-    title: str = ""
+    title: str = "",
+    opacity: float = 0.3,
+    randomize_trace_order: bool = False,
 ) -> go.Figure:
     p1, p2 = pcs
     xlab, ylab = f"PC{p1}", f"PC{p2}"
+    fig = make_scores_scatter(scores_df, pcs,
+                              color_by=None, title=title,
+                              opacity=opacity, randomize_trace_order=randomize_trace_order)
 
-    # Scores layer (no color grouping here)
-    fig = make_scores_scatter(scores_df, pcs, color_by=None, title=title)
+    if not load_df.empty:
+        for _, r in load_df.iterrows():
+            fig.add_trace(go.Scatter(
+                x=[0, r.get(xlab, 0.0)], y=[0, r.get(ylab, 0.0)],
+                mode="lines+markers+text",
+                text=[None, r.get("feature", "")],
+                textposition="top center",
+                marker=dict(size=[0, 4]),
+                line=dict(width=1),
+                showlegend=False,
+                hoverinfo="text"
+            ))
 
-    # Loadings as arrows with feature labels at the arrow tips
-    for _, r in load_df.iterrows():
-        fig.add_trace(go.Scatter(
-            x=[0, r.get(xlab, 0.0)],
-            y=[0, r.get(ylab, 0.0)],
-            mode="lines+markers+text",
-            text=[None, r.get("feature", "")],
-            textposition="top center",
-            marker=dict(size=[0, 4]),
-            line=dict(width=1),
-            showlegend=False,
-            hoverinfo="text",
-        ))
-
+    fig.update_layout(xaxis_title=xlab, yaxis_title=ylab)
     return fig
