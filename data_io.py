@@ -132,56 +132,145 @@ def add_multi_class_labels(df: pd.DataFrame, max_level: int) -> pd.DataFrame:
 
 
 # -----------------------------
+# Helpers
+# -----------------------------
+PARENT_OTHER_SUFFIX = " — Other"
+UNCLASS_OTHER       = "Other — Unclassified"
+
+
+@st.cache_data(show_spinner=True)
+def add_class_labels(df: pd.DataFrame, level: int) -> pd.DataFrame:
+    """
+    Attach label_1 ... label_{level} for Commodity_Code using HBSIR metadata.
+    Only 'label' aspect is requested.
+    """
+    # Ask for all levels up to 'level' in one call (faster than many small calls)
+    levels = list(range(1, level + 1))
+    try:
+        out = hbsir.add_classification(
+            df, target="Commodity_Code",
+            levels=levels,
+            aspects=["label"],
+        )
+    except Exception as e:
+        raise RuntimeError(
+            f"Classification labels up to level {level} are not available in your installed metadata."
+        ) from e
+    return out
+
+
+def group_unlabeled_to_parent_other(df: pd.DataFrame, target_level: int) -> pd.DataFrame:
+    """
+    For rows missing label_{target_level}, fill with:
+      - '{nearest_parent_label} — Other' if some parent (label_{<L}) exists
+      - 'Other — Unclassified'          otherwise
+    Vectorized implementation (no per-row Python loops).
+    """
+    tcol = f"label_{target_level}"
+    if tcol not in df.columns:
+        raise ValueError(f"Expected '{tcol}' column on the frame.")
+
+    x = df.copy()
+    # Work with object dtype to avoid pandas casting surprises
+    x[tcol] = x[tcol].astype(object)
+    missing = x[tcol].isna() | (x[tcol].astype(str).str.strip() == "")
+
+    if not missing.any():
+        return x
+
+    if target_level == 1:
+        # No parents exist at L1
+        x.loc[missing, tcol] = UNCLASS_OTHER
+        return x
+
+    # Find the highest parent that is non-null in the row.
+    parent_cols = [f"label_{j}" for j in range(target_level - 1, 0, -1) if f"label_{j}" in x.columns]
+    if not parent_cols:
+        # Fallback: nothing to look at
+        x.loc[missing, tcol] = UNCLASS_OTHER
+        return x
+
+    # Because parent_cols are in descending order (L-1, L-2, ..., 1),
+    # bfill horizontally will push the first non-null to the leftmost column.
+    parent_series = x[parent_cols].bfill(axis=1).iloc[:, 0]
+
+    # Compose replacement values
+    have_parent = parent_series.notna() & (parent_series.astype(str).str.strip() != "")
+    replace_vals = pd.Series(UNCLASS_OTHER, index=x.index, dtype=object)
+    replace_vals.loc[have_parent] = parent_series.loc[have_parent].astype(str) + PARENT_OTHER_SUFFIX
+
+    # Fill only where target label is missing
+    x.loc[missing, tcol] = replace_vals.loc[missing].values
+    return x
+
+
+
+
+# -----------------------------
 # Feature matrix at chosen commodity level
 # -----------------------------
 @st.cache_data(show_spinner=True)
-def build_household_matrix_by_level(df: pd.DataFrame,
-                                    years: List[int],
-                                    level: int,
-                                    exp_measure: str) -> Tuple[pd.DataFrame, pd.DataFrame, str]:
+def build_household_matrix_by_level(
+    df: pd.DataFrame,
+    years: list,
+    level: int,
+    exp_measure: str,
+) -> tuple[pd.DataFrame, pd.DataFrame, str]:
     """
-    Aggregate household expenditures *by chosen commodity level* (1..5).
-    - Columns = categories at that level (use label if present, otherwise 'Unlabeled_L{level}').
-    - No row/column is dropped other than the area/settlement/year filters applied upstream.
-    Returns: (wide_features, household_meta, label_col_name)
+    Build the household-wide matrix at the chosen classification level.
+
+    Steps:
+      1) filter by years
+      2) attach label_1...label_{level}
+      3) fill missing label_{level} to '{nearest_parent} — Other' (or 'Other — Unclassified')
+      4) group Year, ID, label_{level} and pivot to wide
+      5) return (wide, meta, label_col_name)
     """
+    # 1) Year filter
     df = df[df["Year"].isin(years)].copy()
-    df = add_multi_class_labels(df, level)
+
+    # 2) Labels for 1..level
+    df = add_class_labels(df, level)
     label_col = f"label_{level}"
 
-    # Build category key = label if available else 'Unlabeled_L{level}'
-    # (We keep unlabeled as a single bucket; you can fan-out by code if you prefer.)
-    cat_key = df[label_col].copy()
-    if label_col not in df.columns:
-        # If the chosen level is completely unavailable, fallback to a single bucket
-        cat_key = pd.Series([f"Unlabeled_L{level}"] * len(df), index=df.index)
-    else:
-        cat_key = cat_key.fillna(f"Unlabeled_L{level}")
+    # 3) Group unlabeled into parent '— Other' (or 'Other — Unclassified')
+    df = group_unlabeled_to_parent_other(df, target_level=level)
 
-    tall = (
-        df.assign(__cat__=cat_key)
-          .groupby(["Year", "ID", "__cat__"], observed=False, dropna=False)[exp_measure]
+    # 4) Aggregate and pivot
+    # Sum expenditure to (Year, ID, label_{level})
+    agg = (
+        df.groupby(["Year", "ID", label_col], observed=False, dropna=False)[exp_measure]
           .sum(min_count=1)
           .reset_index()
     )
 
-    # Pivot to wide household × categories
-    wide = (tall
-            .pivot_table(index=["Year", "ID"], columns="__cat__", values=exp_measure,
-                         aggfunc="sum", fill_value=0, observed=False)
-            .sort_index(axis=1))
+    # Wide: households × features (chosen level)
+    wide = agg.pivot_table(
+        index=["Year", "ID"],
+        columns=label_col,
+        values=exp_measure,
+        aggfunc="sum",
+        fill_value=0,
+        observed=False,
+    )
+    # Ensure string column names
     wide.columns = wide.columns.astype(str)
+    wide.sort_index(axis=1, inplace=True)
 
-    # Household meta (Province/County/Settlement)
-    keep_meta = ["Province_code","Province_farsi_name","County_code","County_farsi_name"]
-    urc = urban_rural_col(df)
-    if urc: keep_meta.append(urc)
-
-    base = (df.drop_duplicates(subset=["Year", "ID"])
-              .set_index(["Year", "ID"]))
-    meta = base[[c for c in keep_meta if c in base.columns]].reindex(wide.index)
+    # 5) Meta (Province/County/Settlement if present)
+    meta_cols = [c for c in [
+        "Province_code", "Province_farsi_name",
+        "County_code",   "County_farsi_name",
+        "Urban_Rural_name", "Urban_Rural"
+    ] if c in df.columns]
+    meta = (
+        df.drop_duplicates(subset=["Year", "ID"])
+          .set_index(["Year", "ID"])[meta_cols]
+          .reindex(wide.index)
+    )
 
     return wide, meta, label_col
+
 
 
 # -----------------------------
