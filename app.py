@@ -176,8 +176,12 @@ if run_btn:
             load_df_all = full_loadings_df(components=comps, explained_var=lam,
                                            feature_names=feature_names, scale=1.0)
 
-            df_year = exp_hh_view[exp_hh_view["Year"] == yr]
-            feature_meta = feature_meta_for_year(df_year, state.level, feature_names).drop_duplicates("feature")
+            # Use the UNFILTERED pool for taxonomy coverage so all parent labels exist
+            df_year_meta_source = exp_hh_all[exp_hh_all["Year"] == yr]
+            feature_meta = feature_meta_for_year(
+                df_year_meta_source, state.level, feature_names
+            ).drop_duplicates("feature")
+
             parent_cols = [c for c in feature_meta.columns if c.startswith("label_")]
             load_df_all = load_df_all.merge(feature_meta[["feature"] + parent_cols], on="feature", how="left")
 
@@ -265,34 +269,62 @@ if plot_kind in ("Scores", "Biplot"):
 # Loadings filter
 loading_filter = None
 if plot_kind in ("Loadings", "Biplot"):
+
     st.subheader("Loadings filter")
     cur_year = years_ready[min(st.session_state.get("plot_year_idx", 0), len(years_ready) - 1)]
     res_cur = st.session_state.pca_results[cur_year]
     feat_meta = res_cur.get("feature_meta")
 
-    if feat_meta is None or len(feat_meta)==0:
-        features_all = sorted(res_cur["load_df_all"]["feature"].astype(str).unique().tolist())
-        loading_filter = st.multiselect("Keep only these features (optional)", features_all, default=features_all)
+    # If we don't have meta, just offer a flat feature picker
+    if feat_meta is None or len(feat_meta) == 0:
+        features_all = sorted(pd.DataFrame(res_cur["load_df_all"])["feature"].astype(str).unique().tolist())
+        loading_filter = st.multiselect(
+            "Features (filtered by parents)",
+            features_all,
+            default=features_all,
+            key="loadfilt_features"
+        )
     else:
         df_cur = pd.DataFrame(feat_meta).copy()
-        parent_cols = [c for c in df_cur.columns if c.startswith("label_")]
-        parents_idx = sorted([int(c.split("_")[1]) for c in parent_cols]) if parent_cols else []
-        used_level = (max(parents_idx) + 1) if parents_idx else 1
+        # Find the deepest level present, e.g., label_1..label_L
+        label_cols = [c for c in df_cur.columns if str(c).startswith("label_")]
+        if label_cols:
+            max_level = max(int(c.split("_")[1]) for c in label_cols)
+        else:
+            max_level = 1
 
-        if used_level >= 3 and f"label_{used_level-2}" in df_cur.columns:
-            opts_hi = sorted(df_cur[f"label_{used_level-2}"].dropna().unique().tolist())
-            pick_hi = st.multiselect(f"Level {used_level-2} groups", opts_hi, default=opts_hi)
-            if pick_hi:
-                df_cur = df_cur[df_cur[f"label_{used_level-2}"].isin(pick_hi)]
+        # Detect deepest intended level from user choice, not from what's present
+        max_level = int(state.level)
 
-        if used_level >= 2 and f"label_{used_level-1}" in df_cur.columns:
-            opts_mid = sorted(df_cur[f"label_{used_level-1}"].dropna().unique().tolist())
-            pick_mid = st.multiselect(f"Level {used_level-1} groups", opts_mid, default=opts_mid)
-            if pick_mid:
-                df_cur = df_cur[df_cur[f"label_{used_level-1}"].isin(pick_mid)]
+        # Make sure all label columns exist up to max_level and are strings
+        for lev in range(1, max_level + 1):
+            col = f"label_{lev}"
+            if col not in df_cur.columns:
+                df_cur[col] = "(unknown)"
+            df_cur[col] = df_cur[col].fillna("(unknown)").astype(str)
 
+        # Render EVERY parent level 1..(max_level-1)
+        for lev in range(1, max_level):
+            col = f"label_{lev}"
+            opts = sorted(df_cur[col].dropna().astype(str).unique().tolist())
+            picked = st.multiselect(
+                f"Level {lev} groups",
+                options=opts,
+                default=opts,                     # default: show all
+                key=f"loadfilt_y{cur_year}_l{lev}_lvl{max_level}"  # include year+level in key to avoid stale state
+            )
+            if picked:
+                df_cur = df_cur[df_cur[col].isin(picked)]
+
+
+        # Finally, features filtered by the chosen parents
         features_all = sorted(df_cur["feature"].astype(str).unique().tolist())
-        loading_filter = st.multiselect("Features (filtered by parents)", features_all, default=features_all)
+        loading_filter = st.multiselect(
+            "Features (filtered by parents)",
+            options=features_all,
+            default=features_all,
+            key=f"loadfilt_y{cur_year}_features_lvl{max_level}"
+        )
 
 # Year stepper
 st.subheader("Year")

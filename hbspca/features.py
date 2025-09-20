@@ -28,41 +28,97 @@ def add_class_labels(df: pd.DataFrame, level: int) -> pd.DataFrame:
         raise RuntimeError(f"Classification labels up to level {level} are not available.") from e
     return out
 
-def group_unlabeled_to_parent_other(df: pd.DataFrame, target_level: int) -> pd.DataFrame:
-    tcol = f"label_{target_level}"
-    if tcol not in df.columns:
-        raise ValueError(f"Expected '{tcol}' column on the frame.")
 
+def _norm_label(x: object) -> str:
+    s = str(x).strip()
+    if s.lower() in {"", "none", "nan", "null"}:
+        return UNCLASS_OTHER
+    return s
+
+def _is_other_like(s: str) -> bool:
+    s_low = s.lower()
+    return (
+        s == UNCLASS_OTHER
+        or " — other" in s_low             # already an “— Other”
+        or s_low.startswith("other_")      # taxonomy leaf like other_breads
+        or s_low.startswith("other ")      # just in case
+    )
+
+def _collapse_other_chain(s: str) -> str:
+    # collapse “ — Other — Other — Other” -> “ — Other”
+    while " — Other — Other" in s:
+        s = s.replace(" — Other — Other", " — Other")
+    return s
+
+def complete_path_to_level(df: pd.DataFrame, level: int) -> pd.DataFrame:
+    """
+    Ensure label_1..label_level exist for every row.
+    Rules:
+    - normalize None/NaN/"" -> UNCLASS_OTHER
+    - never produce “ — Other — Other…”
+    - if ancestor is already other-like (UNCLASS_OTHER or real other_* leaf),
+      then just repeat that ancestor for deeper levels (no extra “ — Other”)
+    - otherwise: add ONE local “ — Other” at the first missing level, and
+      copy that value down to the remaining deeper levels.
+    """
     x = df.copy()
-    x[tcol] = x[tcol].astype(object)
-    missing = x[tcol].isna() | (x[tcol].astype(str).str.strip() == "")
 
-    if not missing.any():
-        return x
+    # Ensure columns exist and normalize
+    for j in range(1, level + 1):
+        col = f"label_{j}"
+        if col not in x.columns:
+            x[col] = UNCLASS_OTHER
+        x[col] = x[col].map(_norm_label).astype(object)
 
-    if target_level == 1:
-        x.loc[missing, tcol] = UNCLASS_OTHER
-        return x
+    # Walk levels left→right and fill missing segments
+    for j in range(2, level + 1):
+        parent = f"label_{j-1}"
+        col    = f"label_{j}"
+        # row-wise: decide fill per rules
+        missing = (x[col].astype(str).str.strip() == "") | x[col].isna() | (x[col] == UNCLASS_OTHER)
 
-    parent_cols = [f"label_{j}" for j in range(target_level - 1, 0, -1) if f"label_{j}" in x.columns]
-    if not parent_cols:
-        x.loc[missing, tcol] = UNCLASS_OTHER
-        return x
+        if missing.any():
+            parent_vals = x.loc[missing, parent].astype(str).map(_norm_label)
+            # case A: parent already other-like  -> repeat parent
+            mask_other_parent = parent_vals.apply(_is_other_like)
+            if mask_other_parent.any():
+                x.loc[missing[missing].index[mask_other_parent], col] = parent_vals[mask_other_parent]
+            # case B: parent not other-like -> exactly one local “ — Other”
+            mask_not_other = ~mask_other_parent
+            if mask_not_other.any():
+                x.loc[missing[missing].index[mask_not_other], col] = (
+                    parent_vals[mask_not_other] + PARENT_OTHER_SUFFIX
+                )
 
-    parent_series = x[parent_cols].bfill(axis=1).iloc[:, 0]
-    have_parent = parent_series.notna() & (parent_series.astype(str).str.strip() != "")
-    replace_vals = pd.Series(UNCLASS_OTHER, index=x.index, dtype=object)
-    replace_vals.loc[have_parent] = parent_series.loc[have_parent].astype(str) + PARENT_OTHER_SUFFIX
-    x.loc[missing, tcol] = replace_vals.loc[missing].values
+        # collapse accidental chains produced upstream
+        x[col] = x[col].astype(str).map(_collapse_other_chain)
+
+    # Copy forward: if any deeper level still slipped to empty/UNCLASS_OTHER while parent is informative,
+    # repeat the last non-empty value (but keep collapsed)
+    labels = [f"label_{j}" for j in range(1, level + 1)]
+    x[labels] = x[labels].applymap(_norm_label)
+    for j in range(2, level + 1):
+        prev, col = f"label_{j-1}", f"label_{j}"
+        need_copy = (x[col] == UNCLASS_OTHER) & (x[prev] != UNCLASS_OTHER)
+        if need_copy.any():
+            x.loc[need_copy, col] = x.loc[need_copy, prev].astype(str).map(_collapse_other_chain)
+
+    # Final cleanup
+    for j in range(1, level + 1):
+        col = f"label_{j}"
+        x[col] = x[col].astype(str).map(_collapse_other_chain)
+
     return x
+
 
 @st.cache_data(show_spinner=True)
 def build_household_matrix_by_level(df: pd.DataFrame, years: list, level: int, exp_measure: str):
     df = df[df["Year"].isin(years)].copy()
-    df = add_class_labels(df, level)
+    df = add_class_labels(df, level=level)
+    df = complete_path_to_level(df, level=level)  # <-- important
     label_col = f"label_{level}"
-    df = group_unlabeled_to_parent_other(df, target_level=level)
 
+    # 3) aggregate and pivot
     agg = (
         df.groupby(["Year", "ID", label_col], observed=False, dropna=False)[exp_measure]
           .sum(min_count=1).reset_index()
@@ -78,19 +134,23 @@ def build_household_matrix_by_level(df: pd.DataFrame, years: list, level: int, e
     meta = (df.drop_duplicates(subset=["Year","ID"]).set_index(["Year","ID"])[meta_cols]
               .reindex(wide.index))
     return wide, meta, label_col
-
+    
 def feature_meta_for_year(df_year: pd.DataFrame, level: int, feature_names: List[str]) -> pd.DataFrame:
-    dfc = add_multi_class_labels(df_year, level)
-    path_cols = [f"label_{i}" for i in range(1, level + 1) if f"label_{i}" in dfc.columns]
-    if f"label_{level}" in path_cols:
-        uniq_paths = dfc[path_cols].dropna(subset=[f"label_{level}"]).drop_duplicates()
-        uniq_paths = uniq_paths.rename(columns={f"label_{level}": "feature"})
-    else:
-        uniq_paths = pd.DataFrame(columns=["feature"])
+    """
+    Create a mapping table with columns: feature (=label_level), label_1..label_level.
+    Uses completed paths so every feature has full lineage.
+    """
+    dfc = add_class_labels(df_year, level=level)
+    dfc = complete_path_to_level(dfc, level=level)  # <-- important
+    path_cols = [f"label_{i}" for i in range(1, level + 1)]
+    uniq = dfc[path_cols].drop_duplicates().rename(columns={f"label_{level}": "feature"})
 
-    meta = pd.DataFrame({"feature": [str(f) for f in feature_names]}).merge(uniq_paths, on="feature", how="left")
+    meta = pd.DataFrame({"feature": [str(f) for f in feature_names]}).merge(uniq, on="feature", how="left")
+
+    # Guarantee presence and string dtype
     for i in range(1, level):
         col = f"label_{i}"
-        if col in meta.columns:
-            meta[col] = meta[col].fillna("(unknown)")
+        if col not in meta.columns:
+            meta[col] = "(unknown)"
+        meta[col] = meta[col].fillna("(unknown)").astype(str)
     return meta
