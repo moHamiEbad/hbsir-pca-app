@@ -11,6 +11,13 @@ This Streamlit app runs PCA **per year** on **household-level** expenditure feat
 - Per-year outputs saved to disk (scores+household info, loadings for **all** PCs, variance table).
 - Plotting section: Scores / Loadings / 2D–3D Biplot; flexible aggregation (Household / County / Province).
 
+## Project structure
+
+- `app.py` — Streamlit entrypoint
+- `hbspca/` — Modularized code (I/O, PCA, plotting, saving, etc.)
+- `requirements.txt` — Python dependencies
+- `pca_output/` — (ignored) Generated files will be saved here
+
 ## Prerequisites
 - **Python 3.9–3.12**  
 - Install dependencies:
