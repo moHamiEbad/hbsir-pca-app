@@ -7,26 +7,49 @@ import hbsir
 PARENT_OTHER_SUFFIX = " — Other"
 UNCLASS_OTHER       = "Other — Unclassified"
 
-@st.cache_data(show_spinner=False)
-def add_multi_class_labels(df: pd.DataFrame, max_level: int) -> pd.DataFrame:
-    out = df.copy()
-    for lvl in range(1, max_level + 1):
-        try:
-            out = hbsir.add_classification(out, target="Commodity_Code",
-                                           levels=[lvl], aspects=["label"])
-        except Exception:
-            continue
-    return out
-
+# ---------- SMALL CACHED MAP ----------
 @st.cache_data(show_spinner=True)
-def add_class_labels(df: pd.DataFrame, level: int) -> pd.DataFrame:
+def _get_label_map(unique_codes: tuple, level: int, code_col: str = "Commodity_Code") -> pd.DataFrame:
+    """
+    Returns a small mapping: <code_col> + label_1..label_level.
+    Needs a Year column for hbsir.add_classification, so we add a dummy.
+    """
     levels = list(range(1, level + 1))
-    try:
-        out = hbsir.add_classification(df, target="Commodity_Code",
-                                       levels=levels, aspects=["label"])
-    except Exception as e:
-        raise RuntimeError(f"Classification labels up to level {level} are not available.") from e
-    return out
+    label_cols = [f"label_{i}" for i in levels]
+
+    if not unique_codes:
+        return pd.DataFrame(columns=[code_col] + label_cols)
+
+    # add dummy Year, because classification requires it
+    tmp = pd.DataFrame({
+        code_col: list(unique_codes),
+        "Year": [1400] * len(unique_codes)   # any valid year in your range
+    })
+
+    lab = hbsir.add_classification(
+        tmp, target=code_col, levels=levels, aspects=["label"]
+    )
+
+    keep = [code_col] + [c for c in lab.columns if c.startswith("label_")]
+    lab = lab[keep].drop_duplicates(subset=[code_col]).reset_index(drop=True)
+
+    # ensure all requested label columns exist
+    for c in label_cols:
+        if c not in lab.columns:
+            lab[c] = None
+
+    return lab[[code_col] + label_cols]
+
+# ---------- LIGHT ATTACH (NOT CACHED) ----------
+def add_class_labels(df: pd.DataFrame, level: int) -> pd.DataFrame:
+    """Attach label_1..label_level by merging the small cached label map."""
+    if df.empty or "Commodity_Code" not in df.columns:
+        return df.copy()
+    unique_codes = tuple(pd.Series(df["Commodity_Code"]).dropna().unique().tolist())
+    labmap = _get_label_map(unique_codes, level=level)
+    # faster join with index (optional):
+    labmap = labmap.set_index("Commodity_Code")
+    return df.join(labmap, on="Commodity_Code")
 
 
 def _norm_label(x: object) -> str:

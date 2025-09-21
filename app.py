@@ -5,6 +5,7 @@ import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
 
+from utils import notify_done
 from hbspca.ui import sidebar
 from hbspca.io import setup_hbsir, load_households, load_expenditures, merge_exp_hh, filter_area_settlement, guess_weight_col
 from hbspca.features import build_household_matrix_by_level, feature_meta_for_year
@@ -35,22 +36,28 @@ state = sidebar(years_full, hh_for_menus)    # must accept None
 
 # --- If user has saved files, let them load them now (no downloads, no PCA) ---
 if state.use_existing and state.load_dir and os.path.isdir(state.load_dir):
-    if st.button("Load saved results"):
-        from hbspca.saving import load_saved_results
-        loaded = load_saved_results(state.load_dir)
-        if not loaded:
-            st.warning("No saved files found in that folder (expected: pca_year_YYYY.xlsx).")
-        else:
-            # Put into session the same way the PCA path does
-            st.session_state.pca_results = {yr: obj.__dict__ for yr, obj in loaded.items()}
-            st.session_state.ref_components = None
-            st.session_state.years_run = sorted(loaded.keys())
-            st.success(f"Loaded results for years: {', '.join(map(str, st.session_state.years_run))}")
-            # Make sure plotting sees the new data immediately
-            try:
-                st.rerun()
-            except AttributeError:
-                st.experimental_rerun()
+# --- If user has saved files, let them load them now (no downloads, no PCA) ---
+    if state.use_existing and state.load_dir and os.path.isdir(state.load_dir):
+        if st.button("Load saved results"):
+            from hbspca.saving import load_saved_results
+            loaded = load_saved_results(state.load_dir)
+            if not loaded:
+                st.warning("No saved files found in that folder (expected: pca_year_YYYY.xlsx).")
+            else:
+                # Put into session the same way the PCA path does
+                st.session_state.pca_results = {yr: obj.__dict__ for yr, obj in loaded.items()}
+                st.session_state.ref_components = None
+                st.session_state.years_run = sorted(loaded.keys())
+                st.session_state.plot_year_idx = 0   # ✅ reset index here
+
+                st.success(f"Loaded results for years: {', '.join(map(str, st.session_state.years_run))}")
+                # Make sure plotting sees the new data immediately
+                notify_done(sound=True, toast=True, desktop_note=True)
+                try:
+                    st.rerun()
+                except AttributeError:
+                    st.experimental_rerun()
+
 
 
 
@@ -96,11 +103,16 @@ if run_btn:
         )
 
         weight_col = guess_weight_col(exp_hh_view)
-        col1, col2 = st.columns([1, 1])
+        # col1, col2 = st.columns([1, 1])
 
         for idx, yr in enumerate(sorted(state.years)):
             # Build per-year household × features matrix
-            wide_y, meta_y, _ = build_household_matrix_by_level(exp_hh_view, [yr], state.level, state.exp_measure)
+            try:
+                wide_y, meta_y, _ = build_household_matrix_by_level(exp_hh_view, [yr], state.level, state.exp_measure)
+            except MemoryError:
+                st.error(f"Year {yr}: ran out of memory while building the matrix. "
+                        "Try a lower classification level, fewer areas, or a different normalization.")
+                continue
             if wide_y.empty:
                 st.warning(f"Year {yr}: no data after filters. Skipped.")
                 continue
@@ -202,6 +214,9 @@ if run_btn:
             ).__dict__
 
         st.success("PCA finished. See the **Plotting** section below.")
+        st.session_state.plot_year_idx = 0 
+        notify_done(sound=True, toast=True, desktop_note=True)
+
 
 # Plotting
 st.markdown("---")
@@ -212,21 +227,41 @@ if not st.session_state.pca_results:
 
 years_ready = sorted(st.session_state.pca_results.keys())
 
-st.subheader("PC selection")
-max_pc_global = max(len([c for c in v["scores_df"].columns if c.startswith("PC")])
-                    for v in st.session_state.pca_results.values())
-plot_dim = st.radio("Plot dimensionality", ["2D", "3D"], horizontal=True)
-pc1 = st.number_input("PC for X-axis", min_value=1, max_value=max_pc_global, value=1, step=1)
-pc2 = st.number_input("PC for Y-axis", min_value=1, max_value=max_pc_global, value=2, step=1)
-pcs = (int(pc1), int(pc2))
-if plot_dim == "3D":
-    pc3 = st.number_input("PC for Z-axis", min_value=1, max_value=max_pc_global, value=3, step=1)
-    pcs = (int(pc1), int(pc2), int(pc3))
+# 👇 Clamp plot_year_idx to a valid range, then define cur_year once
+idx = st.session_state.get("plot_year_idx", 0)
+if not years_ready:
+    st.info("No results to plot. Run PCA or load saved results.")
+    st.stop()
+idx = max(0, min(idx, len(years_ready) - 1))
+st.session_state.plot_year_idx = idx
+cur_year = years_ready[idx]
 
-plot_kind = st.radio("Plot type", ["Scores", "Loadings", "Biplot"], horizontal=True)
-loading_scale = 1.0
+
+# Master toggle: one set of controls shared across years
+apply_all = st.checkbox(
+    "Apply selections to all years",
+    value=st.session_state.get("apply_all_years", True),
+    key="apply_all_years",
+)
+
+def k(name: str) -> str:
+    """Stable state keys: global when apply_all=True, per-year otherwise."""
+    return f"plot_all__{name}" if apply_all else f"plot_y{cur_year}__{name}"
+
+# Plot type
+_plot_kind_default = st.session_state.get(k("plot_kind"), "Scores")
+plot_kind = st.radio(
+    "Plot type", ["Scores", "Loadings", "Biplot"], horizontal=True,
+    index=["Scores","Loadings","Biplot"].index(_plot_kind_default),
+    key=k("plot_kind"),
+)
+
+# Loadings scale (only used for Biplot)
 if plot_kind == "Biplot":
-    loading_scale = st.slider("Loadings scale", 0.2, 100.0, 1.5, 0.1)
+    loading_scale_default = st.session_state.get(k("loading_scale"), 1.5)
+    loading_scale = st.slider("Loadings scale", 0.2, 100.0, loading_scale_default, 0.1, key=k("loading_scale"))
+else:
+    loading_scale = 1.0
 
 point_level = None
 color_by = None
@@ -237,122 +272,146 @@ randomize_order = False
 
 if plot_kind in ("Scores", "Biplot"):
     st.subheader("Scores settings")
-    point_level = st.radio("Each point represents a…", ["Household", "County", "Province"], horizontal=True)
+    _plevel_default = st.session_state.get(k("point_level"), "Household")
+    point_level = st.radio("Each point represents a…", ["Household", "County", "Province"],
+                           horizontal=True, index=["Household","County","Province"].index(_plevel_default),
+                           key=k("point_level"))
+
     sample_any = next(iter(st.session_state.pca_results.values()))["scores_with_meta"]
 
     if point_level == "Household":
-        show_subset = st.checkbox("Filter households by Province/County", value=False)
+        show_subset = st.checkbox("Filter households by Province/County",
+                                  value=st.session_state.get(k("hh_subset"), False), key=k("hh_subset"))
         if show_subset:
-            provs = sorted(sample_any.get("Province_farsi_name", pd.Series([], dtype=str)).dropna().unique().tolist())                 if "Province_farsi_name" in sample_any.columns else []
-            filter_provs = st.multiselect("Provinces", provs, default=provs)
+            provs = sorted(sample_any.get("Province_farsi_name", pd.Series([], dtype=str)).dropna().unique().tolist()) \
+                    if "Province_farsi_name" in sample_any.columns else []
+            # intersect stored with current options
+            default_provs = [p for p in st.session_state.get(k("filter_provs"), provs) if p in provs]
+            filter_provs = st.multiselect("Provinces", provs, default=default_provs, key=k("filter_provs"))
+
             cnts = []
             if filter_provs and "Province_farsi_name" in sample_any.columns and "County_farsi_name" in sample_any.columns:
                 cnts = sorted(sample_any[sample_any["Province_farsi_name"].isin(filter_provs)]
                               ["County_farsi_name"].dropna().unique().tolist())
-            filter_counties = st.multiselect("Counties (optional)", cnts, default=cnts)
-        color_by = st.selectbox("Color households by", ["None", "Settlement", "Province", "County"], index=1)
+            default_cnts = [c for c in st.session_state.get(k("filter_counties"), cnts) if c in cnts]
+            filter_counties = st.multiselect("Counties (optional)", cnts, default=default_cnts, key=k("filter_counties"))
+
+        _color_default = st.session_state.get(k("color_by"), "Settlement")
+        color_by = st.selectbox("Color households by", ["None", "Settlement", "Province", "County"],
+                                index=["None","Settlement","Province","County"].index(_color_default),
+                                key=k("color_by"))
         if color_by == "None":
             color_by = None
-        point_opacity = st.slider("Point opacity", 0.05, 1.0, 0.30, 0.05)
-        if color_by is not None:
-            randomize_order = st.checkbox("Randomize category draw order", value=True)
-    else:
-        if point_level == "Province":
-            provs = sorted(sample_any.get("Province_farsi_name", pd.Series([], dtype=str)).dropna().unique().tolist())                 if "Province_farsi_name" in sample_any.columns else []
-            choose = st.checkbox("Show only a subset of provinces", value=False)
-            filter_provs = st.multiselect("Provinces", provs, default=provs if not choose else [])
-        else:  # County
-            cnts = sorted(sample_any.get("County_farsi_name", pd.Series([], dtype=str)).dropna().unique().tolist())                 if "County_farsi_name" in sample_any.columns else []
-            choose = st.checkbox("Show only a subset of counties", value=False)
-            filter_counties = st.multiselect("Counties", cnts, default=cnts if not choose else [])
+
+        opacity_default = st.session_state.get(k("point_opacity"), 0.30)
+        point_opacity = st.slider("Point opacity", 0.05, 1.0, opacity_default, 0.05, key=k("point_opacity"))
+
+        randomize_order = st.checkbox("Randomize category draw order",
+                                      value=st.session_state.get(k("rand_order"), True),
+                                      key=k("rand_order"))
+
+    elif point_level == "Province":
+        provs = sorted(sample_any.get("Province_farsi_name", pd.Series([], dtype=str)).dropna().unique().tolist()) \
+                if "Province_farsi_name" in sample_any.columns else []
+        choose = st.checkbox("Show only a subset of provinces",
+                             value=st.session_state.get(k("prov_subset"), False), key=k("prov_subset"))
+        default_provs = [p for p in st.session_state.get(k("filter_provs"), provs) if p in provs] if choose else provs
+        filter_provs = st.multiselect("Provinces", provs, default=default_provs, key=k("filter_provs"))
+        color_by = None
+
+    else:  # County
+        cnts = sorted(sample_any.get("County_farsi_name", pd.Series([], dtype=str)).dropna().unique().tolist()) \
+               if "County_farsi_name" in sample_any.columns else []
+        choose = st.checkbox("Show only a subset of counties",
+                             value=st.session_state.get(k("county_subset"), False), key=k("county_subset"))
+        default_cnts = [c for c in st.session_state.get(k("filter_counties"), cnts) if c in cnts] if choose else cnts
+        filter_counties = st.multiselect("Counties", cnts, default=default_cnts, key=k("filter_counties"))
+        color_by = None
 
 # Loadings filter
 loading_filter = None
 if plot_kind in ("Loadings", "Biplot"):
-
     st.subheader("Loadings filter")
-    cur_year = years_ready[min(st.session_state.get("plot_year_idx", 0), len(years_ready) - 1)]
+
     res_cur = st.session_state.pca_results[cur_year]
     feat_meta = res_cur.get("feature_meta")
 
-    # If we don't have meta, just offer a flat feature picker
+    # Prefer saved depth; fall back to app selection
+    saved_level = res_cur.get("level")
+    inferred_level = (len([c for c in (pd.DataFrame(feat_meta).columns if feat_meta is not None else [])
+                           if str(c).startswith("label_")]) + 1) if feat_meta is not None else None
+    max_level = int(saved_level or inferred_level or state.level or 1)
+
+    base_key = "plot_all" if apply_all else f"plot_y{cur_year}"
+
+    def _get_state(key, default):
+        return st.session_state.get(key, default)
+
     if feat_meta is None or len(feat_meta) == 0:
+        # No hierarchy -> flat feature picker
         features_all = sorted(pd.DataFrame(res_cur["load_df_all"])["feature"].astype(str).unique().tolist())
+        default_feats = _get_state(f"{base_key}_features_lvl{max_level}", features_all)
+        # Intersect defaults with what's available this year
+        default_feats = [f for f in default_feats if f in features_all]
         loading_filter = st.multiselect(
             "Features (filtered by parents)",
-            features_all,
-            default=features_all,
-            key="loadfilt_features"
+            options=features_all,
+            default=default_feats,
+            key=f"{base_key}_features_lvl{max_level}",
         )
     else:
         df_cur = pd.DataFrame(feat_meta).copy()
-        # Find the deepest level present, e.g., label_1..label_L
-        label_cols = [c for c in df_cur.columns if str(c).startswith("label_")]
-        if label_cols:
-            max_level = max(int(c.split("_")[1]) for c in label_cols)
-        else:
-            max_level = 1
-
-        # Detect deepest intended level from user choice, not from what's present
-        max_level = int(state.level)
-
-        # Make sure all label columns exist up to max_level and are strings
-        for lev in range(1, max_level + 1):
+        # Ensure label_1..label_{max_level-1} exist as strings
+        for lev in range(1, max_level):
             col = f"label_{lev}"
             if col not in df_cur.columns:
                 df_cur[col] = "(unknown)"
             df_cur[col] = df_cur[col].fillna("(unknown)").astype(str)
 
-        # Render EVERY parent level 1..(max_level-1)
+        # Parent pickers: Level 1..(max_level-1)
         for lev in range(1, max_level):
             col = f"label_{lev}"
             opts = sorted(df_cur[col].dropna().astype(str).unique().tolist())
+
+            # Use stored selection if present; else default to all options
+            stored = _get_state(f"{base_key}_l{lev}_lvl{max_level}", opts)
+            # Intersect stored with current options (in case year differs)
+            stored = [o for o in stored if o in opts]
+
             picked = st.multiselect(
                 f"Level {lev} groups",
                 options=opts,
-                default=opts,                     # default: show all
-                key=f"loadfilt_y{cur_year}_l{lev}_lvl{max_level}"  # include year+level in key to avoid stale state
+                default=stored if stored else opts,
+                key=f"{base_key}_l{lev}_lvl{max_level}",
             )
             if picked:
                 df_cur = df_cur[df_cur[col].isin(picked)]
 
-
-        # Finally, features filtered by the chosen parents
+        # Leaf features after parent filters
         features_all = sorted(df_cur["feature"].astype(str).unique().tolist())
+        stored_feats = _get_state(f"{base_key}_features_lvl{max_level}", features_all)
+        stored_feats = [f for f in stored_feats if f in features_all]
+
         loading_filter = st.multiselect(
             "Features (filtered by parents)",
             options=features_all,
-            default=features_all,
-            key=f"loadfilt_y{cur_year}_features_lvl{max_level}"
+            default=stored_feats if stored_feats else features_all,
+            key=f"{base_key}_features_lvl{max_level}",
         )
 
-# Year stepper
-st.subheader("Year")
-if "plot_year_idx" not in st.session_state:
-    st.session_state.plot_year_idx = 0
-c_prev, c_year, c_next = st.columns([1, 3, 1])
-with c_prev:
-    if st.button("◀ Prev"):
-        st.session_state.plot_year_idx = max(0, st.session_state.plot_year_idx - 1)
-with c_next:
-    if st.button("Next ▶"):
-        st.session_state.plot_year_idx = min(len(years_ready) - 1, st.session_state.plot_year_idx + 1)
-cur_year = years_ready[st.session_state.plot_year_idx]
-c_year.markdown(f"**Showing year:** {cur_year}")
 
 # Build data for current year
 res = st.session_state.pca_results[cur_year]
 
-# --- Cumulative variance (always visible under Plotting) ---
-st.subheader("Cumulative variance")
+# Collapsible cumulative-variance section
 if "var_df" in res and res["var_df"] is not None and len(res["var_df"]) > 0:
-    fig_var = plot_cumulative_variance(
-        pd.DataFrame(res["var_df"]),
-        title=f"Cumulative variance — Year {cur_year}"
-    )
-    st.plotly_chart(fig_var, use_container_width=True)
-    with st.expander("Show variance table"):
-        st.dataframe(pd.DataFrame(res["var_df"]))
+    with st.expander("Cumulative variance", expanded=False):
+        fig_var = plot_cumulative_variance(
+            pd.DataFrame(res["var_df"]),
+            title=f"Cumulative variance — Year {cur_year}"
+        )
+        st.plotly_chart(fig_var, use_container_width=True)
+        st.dataframe(pd.DataFrame(res["var_df"]), use_container_width=True)
 else:
     st.info("No variance data for this year. Run PCA or load saved results.")
 
@@ -407,6 +466,20 @@ if plot_kind == "Biplot" and loading_scale != 1.0:
             load_df_plot[c] = load_df_plot[c] * loading_scale
 
 # Draw
+max_pc_year = len([c for c in res["scores_df"].columns if c.startswith("PC")])
+
+plot_dim = st.radio("Plot dimensionality", ["2D", "3D"], horizontal=True, key="plot_dim_inline")
+
+pc1 = st.number_input("PC for X-axis", 1, max_pc_year, value=st.session_state.get("pc1_inline", 1),
+                      step=1, key="pc1_inline")
+pc2 = st.number_input("PC for Y-axis", 1, max_pc_year, value=st.session_state.get("pc2_inline", 2),
+                      step=1, key="pc2_inline")
+pcs = (int(pc1), int(pc2))
+if plot_dim == "3D":
+    pc3 = st.number_input("PC for Z-axis", 1, max_pc_year, value=st.session_state.get("pc3_inline", 3),
+                          step=1, key="pc3_inline")
+    pcs = (int(pc1), int(pc2), int(pc3))
+
 if plot_kind == "Scores":
     if plot_dim == "2D":
         fig = make_scores_scatter(scores_plot, pcs=(pcs[0], pcs[1]), color_by=color_by,
@@ -458,11 +531,110 @@ elif plot_kind == "Loadings":
         load_df_plot = load_df_plot.merge(pd.DataFrame(feat_meta)[["feature"] + parent_cols], on="feature", how="left")
     st.dataframe(load_df_plot)
 
-else:
+    # --- New: Feature similarity explorer ---
+    st.subheader("Feature similarity explorer")
+
+    # 1) prepare vectors: rows = features, cols = PC1..PCk
+    pc_cols_all = [c for c in load_df_plot.columns if str(c).startswith("PC")]
+    if not pc_cols_all:
+        st.info("No loading columns (PCs) to compare yet.")
+    else:
+        # allow using only top-M PCs (default = all)
+        max_m = len(pc_cols_all)
+        use_top_m = st.slider("Use top M PCs for similarity", 1, max_m, max_m, 1)
+        pc_cols = pc_cols_all[:use_top_m]
+
+        # feature choices come from the (optionally filtered) load_df_plot you already built
+        features_all = sorted(load_df_plot["feature"].astype(str).unique().tolist())
+        if not features_all:
+            st.info("No features available (after filters).")
+        else:
+            picked_feature = st.selectbox("Pick a feature (lowest level)", features_all)
+
+            # neighbors count
+            k_max = max(1, min(50, max(0, len(features_all) - 1)))
+            top_k = st.number_input("Top K closest features", min_value=1, max_value=k_max, value=min(5, k_max), step=1)
+
+            # similarity metric
+            metric = st.selectbox("Relation metric", ["Correlation", "Cosine similarity", "Euclidean distance"])
+            use_abs_corr = False
+            if metric == "Correlation":
+                use_abs_corr = st.checkbox("Use absolute correlation (treat +/- same)", value=True)
+
+            # 2) build the matrix
+            vecs = (load_df_plot[["feature"] + pc_cols]
+                        .dropna(subset=["feature"])
+                        .drop_duplicates(subset=["feature"])
+                        .set_index("feature"))
+            # ensure numeric
+            vecs = vecs.apply(pd.to_numeric, errors="coerce").fillna(0.0)
+
+            if picked_feature not in vecs.index:
+                st.warning("Chosen feature has no loading vector (possibly filtered out).")
+            else:
+                target = vecs.loc[picked_feature].values
+                target_norm = np.linalg.norm(target)
+
+                # 3) compute similarity/distance to all others
+                scores = []
+                for feat, row in vecs.iterrows():
+                    if feat == picked_feature:
+                        continue
+                    v = row.values
+                    if metric == "Correlation":
+                        # handle zero-variance vectors
+                        if np.allclose(v, v.mean()) or np.allclose(target, target.mean()):
+                            r = np.nan
+                        else:
+                            # np.corrcoef needs 1D arrays
+                            r = np.corrcoef(target, v)[0, 1]
+                        if np.isnan(r):
+                            continue
+                        if use_abs_corr:
+                            r = abs(r)
+                        scores.append((feat, float(r)))
+                    elif metric == "Cosine similarity":
+                        denom = (np.linalg.norm(v) * target_norm)
+                        if denom == 0:
+                            cs = 0.0
+                        else:
+                            cs = float(np.dot(target, v) / denom)
+                        scores.append((feat, cs))
+                    else:  # Euclidean distance
+                        d = float(np.linalg.norm(target - v))
+                        scores.append((feat, d))
+
+                if not scores:
+                    st.info("No comparable features found.")
+                else:
+                    # 4) pick top-K according to metric direction
+                    s_df = pd.DataFrame(scores, columns=["feature", "score"])
+                    if metric in ("Correlation", "Cosine similarity"):
+                        s_df = s_df.sort_values("score", ascending=False).head(top_k)
+                    else:  # Euclidean distance -> smaller is closer
+                        s_df = s_df.sort_values("score", ascending=True).head(top_k)
+
+                    # bring parent labels if present
+                    label_cols = [c for c in load_df_plot.columns if str(c).startswith("label_")]
+                    if label_cols:
+                        # load_df_plot may have multiple rows per feature; take unique mapping
+                        uniq_meta = load_df_plot[["feature"] + label_cols].drop_duplicates("feature")
+                        s_df = s_df.merge(uniq_meta, on="feature", how="left")
+
+                    # pretty header
+                    display_metric = {"Correlation": "Correlation (higher=closer)",
+                                    "Cosine similarity": "Cosine similarity (higher=closer)",
+                                    "Euclidean distance": "Euclidean distance (lower=closer)"}[metric]
+                    st.markdown(f"**Closest features to `{picked_feature}`**  \n*Metric:* {display_metric}  \n*PCs used:* {len(pc_cols)}")
+
+                    # show results
+                    st.dataframe(s_df.reset_index(drop=True))
+
+
+else:  # Biplot
     if plot_dim == "2D":
-        plot_df = scores_plot
         fig = make_biplot(
-            plot_df, load_df_plot, pcs=(pcs[0], pcs[1]),
+            scores_plot, load_df_plot, pcs=(pcs[0], pcs[1]),
             title=f"Biplot — Year {cur_year} ({point_level})",
             color_by=color_by, opacity=point_opacity, randomize_trace_order=randomize_order
         )
@@ -484,3 +656,22 @@ else:
                 color_by=color_by, opacity=point_opacity, randomize_trace_order=randomize_order,
             )
             st.plotly_chart(fig, use_container_width=True)
+
+
+# === Year stepper (exactly below the plot) ===
+if plot_kind in ("Scores", "Biplot"):
+    c_prev, c_year, c_next = st.columns([1, 3, 1])
+    with c_prev:
+        if st.button("◀ Prev", key="plot_prev_year_inline"):
+            st.session_state.plot_year_idx = max(0, st.session_state.plot_year_idx - 1)
+            st.rerun()  # <- force a clean rerun right away
+    with c_next:
+        if st.button("Next ▶", key="plot_next_year_inline"):
+            st.session_state.plot_year_idx = min(len(years_ready) - 1, st.session_state.plot_year_idx + 1)
+            st.rerun()  # <- force a clean rerun right away
+
+    # re-clamp & display
+    idx = max(0, min(st.session_state.plot_year_idx, len(years_ready) - 1))
+    st.session_state.plot_year_idx = idx
+    cur_year = years_ready[idx]
+    c_year.markdown(f"**Showing year:** {cur_year}")
