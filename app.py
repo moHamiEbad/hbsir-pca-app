@@ -248,35 +248,6 @@ def k(name: str) -> str:
     """Stable state keys: global when apply_all=True, per-year otherwise."""
     return f"plot_all__{name}" if apply_all else f"plot_y{cur_year}__{name}"
 
-
-st.subheader("PC selection")
-
-max_pc_global = max(len([c for c in v["scores_df"].columns if c.startswith("PC")])
-                    for v in st.session_state.pca_results.values())
-
-# Plot dimension
-_plot_dim_default = st.session_state.get(k("plot_dim"), "2D")
-plot_dim = st.radio(
-    "Plot dimensionality", ["2D", "3D"], horizontal=True,
-    index=["2D","3D"].index(_plot_dim_default),
-    key=k("plot_dim"),
-)
-
-# PCs (persist across years per the master toggle)
-pc1_default = st.session_state.get(k("pc1"), 1)
-pc2_default = st.session_state.get(k("pc2"), 2)
-pc1 = st.number_input("PC for X-axis", min_value=1, max_value=max_pc_global,
-                      value=pc1_default, step=1, key=k("pc1"))
-pc2 = st.number_input("PC for Y-axis", min_value=1, max_value=max_pc_global,
-                      value=pc2_default, step=1, key=k("pc2"))
-pcs = (int(pc1), int(pc2))
-
-if plot_dim == "3D":
-    pc3_default = st.session_state.get(k("pc3"), 3)
-    pc3 = st.number_input("PC for Z-axis", min_value=1, max_value=max_pc_global,
-                          value=pc3_default, step=1, key=k("pc3"))
-    pcs = (int(pc1), int(pc2), int(pc3))
-
 # Plot type
 _plot_kind_default = st.session_state.get(k("plot_kind"), "Scores")
 plot_kind = st.radio(
@@ -429,38 +400,18 @@ if plot_kind in ("Loadings", "Biplot"):
         )
 
 
-
-# Year stepper
-st.subheader("Year")
-if "plot_year_idx" not in st.session_state:
-    st.session_state.plot_year_idx = 0
-c_prev, c_year, c_next = st.columns([1, 3, 1])
-with c_prev:
-    if st.button("◀ Prev"):
-        st.session_state.plot_year_idx = max(0, st.session_state.plot_year_idx - 1)
-with c_next:
-    if st.button("Next ▶"):
-        st.session_state.plot_year_idx = min(len(years_ready) - 1, st.session_state.plot_year_idx + 1)
-
-idx = max(0, min(st.session_state.plot_year_idx, len(years_ready) - 1))
-st.session_state.plot_year_idx = idx
-cur_year = years_ready[idx]
-
-c_year.markdown(f"**Showing year:** {cur_year}")
-
 # Build data for current year
 res = st.session_state.pca_results[cur_year]
 
-# --- Cumulative variance (always visible under Plotting) ---
-st.subheader("Cumulative variance")
+# Collapsible cumulative-variance section
 if "var_df" in res and res["var_df"] is not None and len(res["var_df"]) > 0:
-    fig_var = plot_cumulative_variance(
-        pd.DataFrame(res["var_df"]),
-        title=f"Cumulative variance — Year {cur_year}"
-    )
-    st.plotly_chart(fig_var, use_container_width=True)
-    with st.expander("Show variance table"):
-        st.dataframe(pd.DataFrame(res["var_df"]))
+    with st.expander("Cumulative variance", expanded=False):
+        fig_var = plot_cumulative_variance(
+            pd.DataFrame(res["var_df"]),
+            title=f"Cumulative variance — Year {cur_year}"
+        )
+        st.plotly_chart(fig_var, use_container_width=True)
+        st.dataframe(pd.DataFrame(res["var_df"]), use_container_width=True)
 else:
     st.info("No variance data for this year. Run PCA or load saved results.")
 
@@ -515,6 +466,20 @@ if plot_kind == "Biplot" and loading_scale != 1.0:
             load_df_plot[c] = load_df_plot[c] * loading_scale
 
 # Draw
+max_pc_year = len([c for c in res["scores_df"].columns if c.startswith("PC")])
+
+plot_dim = st.radio("Plot dimensionality", ["2D", "3D"], horizontal=True, key="plot_dim_inline")
+
+pc1 = st.number_input("PC for X-axis", 1, max_pc_year, value=st.session_state.get("pc1_inline", 1),
+                      step=1, key="pc1_inline")
+pc2 = st.number_input("PC for Y-axis", 1, max_pc_year, value=st.session_state.get("pc2_inline", 2),
+                      step=1, key="pc2_inline")
+pcs = (int(pc1), int(pc2))
+if plot_dim == "3D":
+    pc3 = st.number_input("PC for Z-axis", 1, max_pc_year, value=st.session_state.get("pc3_inline", 3),
+                          step=1, key="pc3_inline")
+    pcs = (int(pc1), int(pc2), int(pc3))
+
 if plot_kind == "Scores":
     if plot_dim == "2D":
         fig = make_scores_scatter(scores_plot, pcs=(pcs[0], pcs[1]), color_by=color_by,
@@ -666,11 +631,10 @@ elif plot_kind == "Loadings":
                     st.dataframe(s_df.reset_index(drop=True))
 
 
-else:
+else:  # Biplot
     if plot_dim == "2D":
-        plot_df = scores_plot
         fig = make_biplot(
-            plot_df, load_df_plot, pcs=(pcs[0], pcs[1]),
+            scores_plot, load_df_plot, pcs=(pcs[0], pcs[1]),
             title=f"Biplot — Year {cur_year} ({point_level})",
             color_by=color_by, opacity=point_opacity, randomize_trace_order=randomize_order
         )
@@ -692,3 +656,22 @@ else:
                 color_by=color_by, opacity=point_opacity, randomize_trace_order=randomize_order,
             )
             st.plotly_chart(fig, use_container_width=True)
+
+
+# === Year stepper (exactly below the plot) ===
+if plot_kind in ("Scores", "Biplot"):
+    c_prev, c_year, c_next = st.columns([1, 3, 1])
+    with c_prev:
+        if st.button("◀ Prev", key="plot_prev_year_inline"):
+            st.session_state.plot_year_idx = max(0, st.session_state.plot_year_idx - 1)
+            st.rerun()  # <- force a clean rerun right away
+    with c_next:
+        if st.button("Next ▶", key="plot_next_year_inline"):
+            st.session_state.plot_year_idx = min(len(years_ready) - 1, st.session_state.plot_year_idx + 1)
+            st.rerun()  # <- force a clean rerun right away
+
+    # re-clamp & display
+    idx = max(0, min(st.session_state.plot_year_idx, len(years_ready) - 1))
+    st.session_state.plot_year_idx = idx
+    cur_year = years_ready[idx]
+    c_year.markdown(f"**Showing year:** {cur_year}")
