@@ -67,7 +67,7 @@ def sidebar(years_full: List[int], hh_for_menus) -> SidebarState:
     exp_measure = st.sidebar.radio("Expenditure measure", EXP_MEASURES, horizontal=True)
 
     st.sidebar.header("6. Save")
-    save_dir = st.sidebar.text_input("Output directory", value="./pca_output", placeholder="./pca_output")
+    save_dir = st.sidebar.text_input("Output directory", value="./pca_outputs/pca_output", placeholder="./pca_outputs/pca_output")
     save_as_excel = st.sidebar.checkbox("Save as Excel (.xlsx with sheets)", value=True)
 
     return SidebarState(

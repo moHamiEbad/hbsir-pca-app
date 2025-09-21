@@ -63,20 +63,40 @@ def load_saved_results(input_dir: str) -> Dict[int, "YearResult"]:
         lam = var_df.get("Explained variance", pd.Series([], dtype=float)).to_numpy()
         X_cols = load_df_all.get("feature", pd.Series([], dtype=str)).astype(str).tolist()
 
-        # Try to recover a feature_meta subset from loadings (the label_* columns)
-        feature_meta_cols = ["feature"] + [c for c in load_df_all.columns if str(c).startswith("label_")]
-        feature_meta = (load_df_all[feature_meta_cols].drop_duplicates("feature")
-                        if set(feature_meta_cols).issubset(load_df_all.columns) else None)
+        # --- Recover full feature_meta from the loadings sheet ---
+        parent_cols = [c for c in load_df_all.columns if str(c).strip().lower().startswith("label_")]
+        feature_meta = None
+        detected_level = None
+
+        if parent_cols:
+            # sort by numeric suffix so label_1, label_2, ...
+            import re
+            pat = re.compile(r"^label[_\-\s]*([0-9]+)$", flags=re.IGNORECASE)
+            parent_cols_sorted = sorted(
+                parent_cols,
+                key=lambda name: int(pat.match(str(name).strip()).group(1)) if pat.match(str(name).strip()) else 999
+            )
+            # build feature_meta as feature + parents
+            feature_meta = (load_df_all[["feature"] + parent_cols_sorted]
+                            .drop_duplicates("feature")
+                            .reset_index(drop=True))
+            # IMPORTANT: leaf is 'feature', parents are label_1..label_(L-1)
+            detected_level = len(parent_cols_sorted) + 1
+        else:
+            feature_meta = None
+            detected_level = None
+
+
 
         results[year] = YearResult(
             X_cols=X_cols,
-            comps=None,               # not stored; fine for plotting/saving
+            comps=None,
             lam=lam,
             scores_df=scores_df,
             scores_with_meta=scores_with_meta,
             load_df_all=load_df_all,
             var_df=var_df,
-            level=None,
+            level=detected_level,          # ✅ store depth we detected from the file
             feature_meta=feature_meta,
             saved={"excel": path},
         )
