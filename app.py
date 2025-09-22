@@ -10,9 +10,10 @@ from hbspca.ui import sidebar
 from hbspca.io import setup_hbsir, load_households, load_expenditures, merge_exp_hh, filter_area_settlement, guess_weight_col
 from hbspca.features import build_household_matrix_by_level, feature_meta_for_year
 from hbspca.pca import weighted_standardize, weighted_pca, align_signs_to_reference, variance_table, full_loadings_df
-from hbspca.plotting import plot_cumulative_variance, make_scores_scatter, make_biplot, make_scores_scatter3d, make_biplot3d
+from hbspca.plotting import plot_cumulative_variance, make_scores_scatter, make_biplot, make_scores_scatter3d, make_biplot3d, make_loadings_plot
 from hbspca.saving import ensure_dir, save_year_results
 from hbspca.types import YearResult
+from hbspca.similarity import render_feature_similarity_explorer
 
 st.set_page_config(page_title="HBSIR PCA — Household level", layout="wide")
 st.title("HBSIR PCA — Household level workflow")
@@ -525,110 +526,51 @@ if plot_kind == "Scores":
             st.plotly_chart(fig, use_container_width=True)
 
 elif plot_kind == "Loadings":
+    # --- Build/trim loadings for the current year ---
+    load_df_plot = pd.DataFrame(res["load_df_all"]).copy()
+
+    # Apply the user's feature subset (if any)
+    if loading_filter:
+        load_df_plot = load_df_plot[
+            load_df_plot["feature"].astype(str).isin(loading_filter)
+        ].copy()
+
+    # Merge parent labels for the table (optional, helpful for inspection)
     feat_meta = res.get("feature_meta")
     if feat_meta is not None and len(feat_meta):
-        parent_cols = [c for c in feat_meta.columns if c.startswith("label_")]
-        load_df_plot = load_df_plot.merge(pd.DataFrame(feat_meta)[["feature"] + parent_cols], on="feature", how="left")
-    st.dataframe(load_df_plot)
+        parent_cols = [c for c in feat_meta.columns if str(c).startswith("label_")]
+        if parent_cols:
+            load_df_plot = load_df_plot.merge(
+                pd.DataFrame(feat_meta)[["feature"] + parent_cols],
+                on="feature",
+                how="left",
+            )
 
-    # --- New: Feature similarity explorer ---
-    st.subheader("Feature similarity explorer")
+    # --- Loadings plot (exactly above "Feature similarity explorer") ---
+    try:
+        pcs_tuple = (pcs[0], pcs[1]) if plot_dim == "2D" else (pcs[0], pcs[1], pcs[2])
+        fig = make_loadings_plot(
+            load_df_plot,
+            pcs=pcs_tuple,
+            title=f"Loadings — Year {cur_year}",
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    except KeyError as e:
+        st.warning(f"Cannot draw loadings plot: {e}")
 
-    # 1) prepare vectors: rows = features, cols = PC1..PCk
-    pc_cols_all = [c for c in load_df_plot.columns if str(c).startswith("PC")]
-    if not pc_cols_all:
-        st.info("No loading columns (PCs) to compare yet.")
-    else:
-        # allow using only top-M PCs (default = all)
-        max_m = len(pc_cols_all)
-        use_top_m = st.slider("Use top M PCs for similarity", 1, max_m, max_m, 1)
-        pc_cols = pc_cols_all[:use_top_m]
+    # --- Collapsible table of loadings & labels ---
+    with st.expander("Show loadings table (PCs & labels)", expanded=False):
+        st.dataframe(load_df_plot, use_container_width=True)
 
-        # feature choices come from the (optionally filtered) load_df_plot you already built
-        features_all = sorted(load_df_plot["feature"].astype(str).unique().tolist())
-        if not features_all:
-            st.info("No features available (after filters).")
-        else:
-            picked_feature = st.selectbox("Pick a feature (lowest level)", features_all)
-
-            # neighbors count
-            k_max = max(1, min(50, max(0, len(features_all) - 1)))
-            top_k = st.number_input("Top K closest features", min_value=1, max_value=k_max, value=min(5, k_max), step=1)
-
-            # similarity metric
-            metric = st.selectbox("Relation metric", ["Correlation", "Cosine similarity", "Euclidean distance"])
-            use_abs_corr = False
-            if metric == "Correlation":
-                use_abs_corr = st.checkbox("Use absolute correlation (treat +/- same)", value=True)
-
-            # 2) build the matrix
-            vecs = (load_df_plot[["feature"] + pc_cols]
-                        .dropna(subset=["feature"])
-                        .drop_duplicates(subset=["feature"])
-                        .set_index("feature"))
-            # ensure numeric
-            vecs = vecs.apply(pd.to_numeric, errors="coerce").fillna(0.0)
-
-            if picked_feature not in vecs.index:
-                st.warning("Chosen feature has no loading vector (possibly filtered out).")
-            else:
-                target = vecs.loc[picked_feature].values
-                target_norm = np.linalg.norm(target)
-
-                # 3) compute similarity/distance to all others
-                scores = []
-                for feat, row in vecs.iterrows():
-                    if feat == picked_feature:
-                        continue
-                    v = row.values
-                    if metric == "Correlation":
-                        # handle zero-variance vectors
-                        if np.allclose(v, v.mean()) or np.allclose(target, target.mean()):
-                            r = np.nan
-                        else:
-                            # np.corrcoef needs 1D arrays
-                            r = np.corrcoef(target, v)[0, 1]
-                        if np.isnan(r):
-                            continue
-                        if use_abs_corr:
-                            r = abs(r)
-                        scores.append((feat, float(r)))
-                    elif metric == "Cosine similarity":
-                        denom = (np.linalg.norm(v) * target_norm)
-                        if denom == 0:
-                            cs = 0.0
-                        else:
-                            cs = float(np.dot(target, v) / denom)
-                        scores.append((feat, cs))
-                    else:  # Euclidean distance
-                        d = float(np.linalg.norm(target - v))
-                        scores.append((feat, d))
-
-                if not scores:
-                    st.info("No comparable features found.")
-                else:
-                    # 4) pick top-K according to metric direction
-                    s_df = pd.DataFrame(scores, columns=["feature", "score"])
-                    if metric in ("Correlation", "Cosine similarity"):
-                        s_df = s_df.sort_values("score", ascending=False).head(top_k)
-                    else:  # Euclidean distance -> smaller is closer
-                        s_df = s_df.sort_values("score", ascending=True).head(top_k)
-
-                    # bring parent labels if present
-                    label_cols = [c for c in load_df_plot.columns if str(c).startswith("label_")]
-                    if label_cols:
-                        # load_df_plot may have multiple rows per feature; take unique mapping
-                        uniq_meta = load_df_plot[["feature"] + label_cols].drop_duplicates("feature")
-                        s_df = s_df.merge(uniq_meta, on="feature", how="left")
-
-                    # pretty header
-                    display_metric = {"Correlation": "Correlation (higher=closer)",
-                                    "Cosine similarity": "Cosine similarity (higher=closer)",
-                                    "Euclidean distance": "Euclidean distance (lower=closer)"}[metric]
-                    st.markdown(f"**Closest features to `{picked_feature}`**  \n*Metric:* {display_metric}  \n*PCs used:* {len(pc_cols)}")
-
-                    # show results
-                    st.dataframe(s_df.reset_index(drop=True))
+    # --- Feature similarity explorer (moved to hbspca/similarity.py) ---
+    # Use a per-year key prefix so selections are stable when stepping years.
+    with st.expander("Feature similarity explorer", expanded=True):
+        st.subheader("Feature similarity explorer")
+        render_feature_similarity_explorer(
+            load_df_plot=load_df_plot,
+            pcs=pcs_tuple,
+            scope_key="all",   # <— changed name
+        )
 
 
 else:  # Biplot
@@ -659,7 +601,7 @@ else:  # Biplot
 
 
 # === Year stepper (exactly below the plot) ===
-if plot_kind in ("Scores", "Biplot"):
+if plot_kind in ("Scores", "Loadings", "Biplot"):
     c_prev, c_year, c_next = st.columns([1, 3, 1])
     with c_prev:
         if st.button("◀ Prev", key="plot_prev_year_inline"):
