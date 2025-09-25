@@ -80,12 +80,6 @@ def make_biplot(scores_df: pd.DataFrame, load_df: pd.DataFrame, pcs: Tuple[int, 
     return fig
 
 
-
-from typing import Optional, Tuple
-import numpy as np
-import pandas as pd
-import plotly.graph_objects as go
-
 def make_scores_scatter3d(
     scores_df: pd.DataFrame,
     pcs: Tuple[int, int, int],
@@ -186,3 +180,97 @@ def make_biplot3d(
                 hovertext=r.get("feature", ""),
             ))
     return fig
+
+
+# hbspca/plotting.py
+def make_loadings_plot(
+    load_df: pd.DataFrame,
+    pcs: Tuple[int, int] | Tuple[int, int, int],
+    title: str,
+) -> "go.Figure":
+    """
+    Draw a loadings plot for the selected PCs.
+    - 2D if len(pcs)==2; 3D if len(pcs)==3.
+    - Expects columns named 'PC1','PC2',... and a 'feature' column.
+    """
+    if len(pcs) == 2:
+        xlab, ylab = f"PC{pcs[0]}", f"PC{pcs[1]}"
+        _assert_has_cols(load_df, [xlab, ylab, "feature"])
+
+        fig = go.Figure()
+        # rays from origin
+        for _, r in load_df.iterrows():
+            fig.add_trace(go.Scatter(
+                x=[0, r[xlab]],
+                y=[0, r[ylab]],
+                mode="lines",
+                line=dict(width=1),
+                showlegend=False,
+                hovertemplate="<b>%{text}</b><br>"
+                              f"{xlab}=%{{x:.3f}}<br>"
+                              f"{ylab}=%{{y:.3f}}<extra></extra>",
+                text=r["feature"],
+            ))
+        # arrow tips
+        fig.add_trace(go.Scatter(
+            x=load_df[xlab],
+            y=load_df[ylab],
+            mode="markers+text",
+            text=load_df["feature"],
+            textposition="top center",
+            marker=dict(size=6, opacity=0.95),
+            showlegend=False,
+            hovertemplate="<b>%{text}</b><br>"
+                          f"{xlab}=%{{x:.3f}}<br>"
+                          f"{ylab}=%{{y:.3f}}<extra></extra>",
+        ))
+        fig.update_layout(
+            title=title, template="plotly_white",
+            xaxis_title=xlab, yaxis_title=ylab, height=600
+        )
+        return fig
+
+    elif len(pcs) == 3:
+        xlab, ylab, zlab = f"PC{pcs[0]}", f"PC{pcs[1]}", f"PC{pcs[2]}"
+        _assert_has_cols(load_df, [xlab, ylab, zlab, "feature"])
+
+        fig = go.Figure()
+        # rays
+        for _, r in load_df.iterrows():
+            fig.add_trace(go.Scatter3d(
+                x=[0, r[xlab]], y=[0, r[ylab]], z=[0, r[zlab]],
+                mode="lines",
+                line=dict(width=2),
+                showlegend=False,
+                hovertext=r["feature"],
+                hovertemplate="<b>%{hovertext}</b><br>"
+                              f"{xlab}=%{{x:.3f}}<br>"
+                              f"{ylab}=%{{y:.3f}}<br>"
+                              f"{zlab}=%{{z:.3f}}<extra></extra>",
+            ))
+        # tips
+        fig.add_trace(go.Scatter3d(
+            x=load_df[xlab], y=load_df[ylab], z=load_df[zlab],
+            mode="markers",
+            marker=dict(size=4, opacity=0.95),
+            showlegend=False,
+            hovertext=load_df["feature"],
+            hovertemplate="<b>%{hovertext}</b><br>"
+                          f"{xlab}=%{{x:.3f}}<br>"
+                          f"{ylab}=%{{y:.3f}}<br>"
+                          f"{zlab}=%{{z:.3f}}<extra></extra>",
+        ))
+        fig.update_layout(
+            title=title, template="plotly_white", height=700,
+            scene=dict(xaxis_title=xlab, yaxis_title=ylab, zaxis_title=zlab)
+        )
+        return fig
+
+    else:
+        raise ValueError("pcs must have length 2 or 3")
+
+
+def _assert_has_cols(df: pd.DataFrame, cols: Iterable[str]) -> None:
+    missing = [c for c in cols if c not in df.columns]
+    if missing:
+        raise KeyError(f"Missing columns in loadings frame: {missing}")
