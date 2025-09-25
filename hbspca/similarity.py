@@ -87,13 +87,18 @@ def render_feature_similarity_explorer(
     m_default = max(pcs) if isinstance(pcs, tuple) else 2
     m_default = max(1, min(int(m_default), max_m))
 
+    # Store the slider value in session state with a consistent key
+    slider_key = f"sim_use_top_m__{scope_key}"
+    if slider_key not in st.session_state:
+        st.session_state[slider_key] = max_m
+
     use_top_m = st.slider(
         "Use top M PCs for similarity",
         min_value=1,
         max_value=max_m,
-        value=max_m,
+        value=st.session_state[slider_key],
         step=1,
-        key=f"sim_use_top_m__{scope_key}",
+        key=slider_key,
     )
     pc_cols = pc_cols_all[:use_top_m]
 

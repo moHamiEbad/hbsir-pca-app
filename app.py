@@ -175,8 +175,12 @@ if run_btn:
             comps, lam, scores, _ = weighted_pca(Z, w if state.weighted else None, n_components=k)
             if st.session_state.ref_components is None:
                 st.session_state.ref_components = comps.copy()
+                st.session_state.ref_features = wide_y.columns.tolist()
             else:
-                comps, scores = align_signs_to_reference(st.session_state.ref_components, comps, scores)
+                comps, scores = align_signs_to_reference(
+                    st.session_state.ref_components, comps, scores,
+                    st.session_state.ref_features, wide_y.columns.tolist()
+                )
 
             # --- Outputs & saving ---
             import pandas as pd
