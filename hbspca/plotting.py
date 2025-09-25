@@ -80,12 +80,6 @@ def make_biplot(scores_df: pd.DataFrame, load_df: pd.DataFrame, pcs: Tuple[int, 
     return fig
 
 
-
-from typing import Optional, Tuple
-import numpy as np
-import pandas as pd
-import plotly.graph_objects as go
-
 def make_scores_scatter3d(
     scores_df: pd.DataFrame,
     pcs: Tuple[int, int, int],

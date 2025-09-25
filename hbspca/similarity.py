@@ -91,7 +91,7 @@ def render_feature_similarity_explorer(
         "Use top M PCs for similarity",
         min_value=1,
         max_value=max_m,
-        value=m_default,
+        value=max_m,
         step=1,
         key=f"sim_use_top_m__{scope_key}",
     )

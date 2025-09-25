@@ -15,7 +15,7 @@ def sidebar(years_full: List[int], hh_for_menus) -> SidebarState:
     load_dir = None
     if use_existing:
         st.sidebar.info("Provide a folder containing per-year Excel files (`pca_year_YYYY.xlsx`).")
-        load_dir = st.sidebar.text_input("Existing results directory", value="", placeholder="/path/to/output")
+        load_dir = st.sidebar.text_input("Existing results directory", value="./pca_outputs/pca_output", placeholder="/path/to/output")
         if load_dir and os.path.isdir(load_dir):
             st.success("Directory looks valid. Select years and jump to Plotting, or re-run PCA.")
         else:
@@ -63,7 +63,7 @@ def sidebar(years_full: List[int], hh_for_menus) -> SidebarState:
 
     st.sidebar.header("4–5. PCA options")
     weighted = st.sidebar.checkbox("Use household weights", value=True)
-    norm_mode = st.sidebar.selectbox("Preprocessing", NORM_MODES, index=2)
+    norm_mode = st.sidebar.selectbox("Preprocessing", NORM_MODES, index=3)
     exp_measure = st.sidebar.radio("Expenditure measure", EXP_MEASURES, horizontal=True)
 
     st.sidebar.header("6. Save")

@@ -69,6 +69,7 @@ if state.area_kind == "Subareas" and st.session_state["hh_menus"] is None:
             # Only prepare the chosen years
             setup_hbsir(state.years)
             st.session_state["hh_menus"] = load_households(state.years)
+            notify_done(sound=True, toast=True, desktop_note=True)
         st.rerun()
 
 # --- Run PCA (this is the first time we touch the data engines) ---
