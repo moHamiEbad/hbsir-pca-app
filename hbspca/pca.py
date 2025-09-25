@@ -39,15 +39,47 @@ def weighted_pca(X: np.ndarray, w: Optional[np.ndarray], n_components: int):
     scores = Xc @ comps
     return comps, eigvals[:k], scores[:, :k], mu
 
-def align_signs_to_reference(V_ref: np.ndarray, V_cur: np.ndarray, scores_cur: np.ndarray):
+def align_signs_to_reference(V_ref: np.ndarray, V_cur: np.ndarray, scores_cur: np.ndarray, feat_names_ref: List[str] = None, feat_names_cur: List[str] = None):
+    """Align signs of current components to reference components, handling different feature sets."""
     Vc = V_cur.copy()
     Sc = scores_cur.copy()
-    r = min(V_ref.shape[1], V_cur.shape[1])
+
+    # If no feature names provided, try to handle different shapes safely
+    if feat_names_ref is None or feat_names_cur is None:
+        # Get common dimension (minimum number of features)
+        min_feats = min(V_ref.shape[0], V_cur.shape[0])
+        # Get common number of components
+        r = min(V_ref.shape[1], V_cur.shape[1])
+        # Use only the common features for alignment
+        for j in range(r):
+            s = np.dot(V_ref[:min_feats, j], V_cur[:min_feats, j])
+            if s < 0:
+                Vc[:, j] *= -1.0
+                Sc[:, j] *= -1.0
+        return Vc, Sc
+
+    # Create common feature index mapping
+    common_feats = list(set(feat_names_ref) & set(feat_names_cur))
+    if not common_feats:
+        # If no common features, return unmodified
+        return Vc, Sc
+        
+    # Get indices for common features in both matrices
+    idx_ref = [feat_names_ref.index(f) for f in common_feats]
+    idx_cur = [feat_names_cur.index(f) for f in common_feats]
+    
+    # Extract common features only
+    V_ref_common = V_ref[idx_ref, :]
+    V_cur_common = Vc[idx_cur, :]
+
+    # Align using only common features
+    r = min(V_ref_common.shape[1], V_cur_common.shape[1])
     for j in range(r):
-        s = np.dot(V_ref[:, j], V_cur[:, j])
+        s = np.dot(V_ref_common[:, j], V_cur_common[:, j])
         if s < 0:
             Vc[:, j] *= -1.0
             Sc[:, j] *= -1.0
+
     return Vc, Sc
 
 def variance_table(eigvals: np.ndarray) -> pd.DataFrame:

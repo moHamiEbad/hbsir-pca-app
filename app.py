@@ -175,8 +175,12 @@ if run_btn:
             comps, lam, scores, _ = weighted_pca(Z, w if state.weighted else None, n_components=k)
             if st.session_state.ref_components is None:
                 st.session_state.ref_components = comps.copy()
+                st.session_state.ref_features = wide_y.columns.tolist()
             else:
-                comps, scores = align_signs_to_reference(st.session_state.ref_components, comps, scores)
+                comps, scores = align_signs_to_reference(
+                    st.session_state.ref_components, comps, scores,
+                    st.session_state.ref_features, wide_y.columns.tolist()
+                )
 
             # --- Outputs & saving ---
             import pandas as pd
@@ -567,10 +571,13 @@ elif plot_kind == "Loadings":
     # Use a per-year key prefix so selections are stable when stepping years.
     with st.expander("Feature similarity explorer", expanded=True):
         st.subheader("Feature similarity explorer")
+        # Get variance info from current year
+        var_df = pd.DataFrame(res["var_df"]) if "var_df" in res else None
         render_feature_similarity_explorer(
             load_df_plot=load_df_plot,
             pcs=pcs_tuple,
-            scope_key="all",   # <— changed name
+            scope_key="all",   
+            var_df=var_df  # Add this parameter
         )
 
 
