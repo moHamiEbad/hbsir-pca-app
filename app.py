@@ -571,10 +571,13 @@ elif plot_kind == "Loadings":
     # Use a per-year key prefix so selections are stable when stepping years.
     with st.expander("Feature similarity explorer", expanded=True):
         st.subheader("Feature similarity explorer")
+        # Get variance info from current year
+        var_df = pd.DataFrame(res["var_df"]) if "var_df" in res else None
         render_feature_similarity_explorer(
             load_df_plot=load_df_plot,
             pcs=pcs_tuple,
-            scope_key="all",   # <— changed name
+            scope_key="all",   
+            var_df=var_df  # Add this parameter
         )
 
 

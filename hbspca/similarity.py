@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Iterable, List, Tuple
+from typing import Iterable, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -71,11 +71,13 @@ def render_feature_similarity_explorer(
     load_df_plot: pd.DataFrame,
     pcs: Tuple[int, int] | Tuple[int, int, int],
     scope_key: str = "all",
+    var_df: Optional[pd.DataFrame] = None,
 ) -> None:
     """
     Streamlit UI for "Feature similarity explorer":
     - keeps selections stable across years if scope_key="all"
     - otherwise stores per-year using scope_key=f"y{year}"
+    - uses variance info to suggest default PC count
     """
 
     pc_cols_all = [c for c in load_df_plot.columns if str(c).startswith("PC")]
@@ -84,13 +86,41 @@ def render_feature_similarity_explorer(
         return
 
     max_m = len(pc_cols_all)
-    m_default = max(pcs) if isinstance(pcs, tuple) else 2
-    m_default = max(1, min(int(m_default), max_m))
+    
+    # Variance percentage selector - using number input instead of slider
+    var_pct_key = f"sim_var_pct__{scope_key}"
+    var_threshold = st.number_input(
+        "Variance threshold (%)",
+        min_value=1,
+        max_value=100,
+        value=80,  # Default 80%
+        step=1,
+        key=var_pct_key,
+    ) / 100.0
 
-    # Store the slider value in session state with a consistent key
+    # Auto-PC selection based on variance
+    auto_pc_key = f"sim_auto_pc__{scope_key}"
+    use_auto_pc = st.checkbox(
+        f"Automatically select number of PCs to capture {var_threshold:.0%} variance",
+        value=st.session_state.get(auto_pc_key, True),
+        key=auto_pc_key
+    )
+
+    default_m = max_m
+    if use_auto_pc and var_df is not None and "Cumulative EVR" in var_df:
+        # Find minimum PCs needed for user-selected variance threshold
+        cum_var = var_df["Cumulative EVR"].values
+        min_pcs = np.searchsorted(cum_var, var_threshold) + 1
+        default_m = min(max_m, max(1, min_pcs))
+    else:
+        # Fall back to previous behavior
+        m_default = max(pcs) if isinstance(pcs, tuple) else 2
+        default_m = max(1, min(int(m_default), max_m))
+
+    # Store the slider value in session state
     slider_key = f"sim_use_top_m__{scope_key}"
-    if slider_key not in st.session_state:
-        st.session_state[slider_key] = max_m
+    if slider_key not in st.session_state or use_auto_pc:
+        st.session_state[slider_key] = default_m
 
     use_top_m = st.slider(
         "Use top M PCs for similarity",
@@ -101,6 +131,11 @@ def render_feature_similarity_explorer(
         key=slider_key,
     )
     pc_cols = pc_cols_all[:use_top_m]
+
+    # Add variance info to UI if available
+    if var_df is not None and "Cumulative EVR" in var_df and use_top_m > 0:
+        cum_var = var_df["Cumulative EVR"].values[use_top_m - 1]
+        st.caption(f"Selected PCs capture {cum_var:.1%} of total variance")
 
     features_all = sorted(load_df_plot["feature"].astype(str).unique().tolist())
     if not features_all:
