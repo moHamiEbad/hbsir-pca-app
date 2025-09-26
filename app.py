@@ -14,6 +14,7 @@ from hbspca.plotting import plot_cumulative_variance, make_scores_scatter, make_
 from hbspca.saving import ensure_dir, save_year_results
 from hbspca.types import YearResult
 from hbspca.similarity import render_feature_similarity_explorer
+from hbspca.importance import render_feature_importance
 
 st.set_page_config(page_title="HBSIR PCA — Household level", layout="wide")
 st.title("HBSIR PCA — Household level workflow")
@@ -563,9 +564,13 @@ elif plot_kind == "Loadings":
     except KeyError as e:
         st.warning(f"Cannot draw loadings plot: {e}")
 
-    # --- Collapsible table of loadings & labels ---
-    with st.expander("Show loadings table (PCs & labels)", expanded=False):
-        st.dataframe(load_df_plot, use_container_width=True)
+    with st.expander("Feature importance across PCs", expanded=True):
+    # st.subheader("Feature importance across PCs")
+        _ = render_feature_importance(
+            load_df_plot=load_df_plot,
+            var_df=pd.DataFrame(res.get("var_df")) if res.get("var_df") is not None else None,
+            scope_key="all",   # or f"y{cur_year}" if you want per-year sticky controls
+        )
 
     # --- Feature similarity explorer (moved to hbspca/similarity.py) ---
     # Use a per-year key prefix so selections are stable when stepping years.
