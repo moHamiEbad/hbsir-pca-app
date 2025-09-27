@@ -2,6 +2,8 @@ from __future__ import annotations
 from typing import List, Tuple
 import os
 import streamlit as st
+from hbspca.id_filter import parse_ids_from_file, parse_ids_from_text
+import pandas as pd
 
 from .types import SidebarState
 from .config import (YEARS_MIN, YEARS_MAX, DEFAULT_YEARS, NORM_MODES, EXP_MEASURES,
@@ -70,6 +72,44 @@ def sidebar(years_full: List[int], hh_for_menus) -> SidebarState:
     save_dir = st.sidebar.text_input("Output directory", value="./pca_outputs/pca_output", placeholder="./pca_outputs/pca_output")
     save_as_excel = st.sidebar.checkbox("Save as Excel (.xlsx with sheets)", value=True)
 
+    # ---- 7. Optional household ID filter (collapsible) ----
+    with st.sidebar.expander("7. Household ID Filter (optional)", expanded=False):
+        ignore_year_for_ids = st.checkbox(
+            "Ignore Year column in ID file",
+            value=True
+        )
+
+        ids_file = st.file_uploader(
+            "CSV/XLSX with 'ID' (and optional 'Year'/'cluster')",
+            type=["csv", "xlsx"],
+        )
+        cluster_col = st.text_input("Cluster column name (optional)", value="")
+        keep_clusters_txt = st.text_input("Keep clusters (comma-separated)", value="")
+
+        id_filter_df = None
+        keep_clusters = [v.strip() for v in keep_clusters_txt.split(",") if v.strip()] if keep_clusters_txt else None
+
+        if ids_file is not None:
+            try:
+                id_filter_df = parse_ids_from_file(
+                    ids_file,
+                    cluster_col=cluster_col if cluster_col else None,
+                    keep_clusters=keep_clusters,
+                    ignore_year=ignore_year_for_ids,
+                )
+                st.success(f"Found {len(id_filter_df)} IDs.")
+            except Exception as e:
+                st.error(f"Error reading ID file: {e}")
+
+        # Optional text input
+        ids_text = st.text_area("Or paste IDs here (space/comma/newline separated):")
+        if ids_text.strip():
+            ids_text_df = parse_ids_from_text(ids_text)
+            if id_filter_df is None:
+                id_filter_df = ids_text_df
+            else:
+                id_filter_df = pd.concat([id_filter_df, ids_text_df]).drop_duplicates().reset_index(drop=True)
+
     return SidebarState(
         use_existing=use_existing,
         load_dir=load_dir,
@@ -84,4 +124,6 @@ def sidebar(years_full: List[int], hh_for_menus) -> SidebarState:
         exp_measure=exp_measure,
         save_dir=save_dir,
         save_as_excel=save_as_excel,
+        id_filter_df=id_filter_df,
+        ignore_year_for_ids=ignore_year_for_ids,
     )
