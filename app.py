@@ -15,6 +15,7 @@ from hbspca.saving import ensure_dir, save_year_results
 from hbspca.types import YearResult
 from hbspca.similarity import render_feature_similarity_explorer
 from hbspca.importance import render_feature_importance
+from hbspca.id_filter import apply_household_id_filter
 
 st.set_page_config(page_title="HBSIR PCA — Household level", layout="wide")
 st.title("HBSIR PCA — Household level workflow")
@@ -105,8 +106,19 @@ if run_btn:
             settlement=state.settlement
         )
 
+        if getattr(state, "id_filter_df", None) is not None and not state.id_filter_df.empty:
+            # Apply optional ID filter (after area/settlement filter, before PCA)
+            if state.id_filter_df is not None and not state.id_filter_df.empty:
+                exp_hh_view = apply_household_id_filter(
+                    df=exp_hh_view,
+                    ids_df=state.id_filter_df,
+                    ignore_year=state.ignore_year_for_ids,  # True => match on ID only
+                )
+                if exp_hh_view.empty:
+                    st.error("پس از اعمال فیلتر ID، دیتایی باقی نماند.")
+                    st.stop()
+
         weight_col = guess_weight_col(exp_hh_view)
-        # col1, col2 = st.columns([1, 1])
 
         for idx, yr in enumerate(sorted(state.years)):
             # Build per-year household × features matrix

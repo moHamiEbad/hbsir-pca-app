@@ -32,3 +32,5 @@ class SidebarState:
     exp_measure: str
     save_dir: str
     save_as_excel: bool
+    id_filter_df: Optional[pd.DataFrame] = None
+    ignore_year_for_ids: bool = True
