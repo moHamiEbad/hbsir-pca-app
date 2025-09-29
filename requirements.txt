@@ -12,4 +12,4 @@ openpyxl>=3.1
 XlsxWriter>=3.2
 
 # Data library (pin to your known-good version if needed)
-hbsir
+hbsir=0.6.2
